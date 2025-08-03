@@ -303,6 +303,7 @@ fn main() -> Result<(), Error> {
                     let pixmap = ReadonlyPixmap {
                         width: w as u32,
                         height: h as u32,
+                        samples: CURRENT_DEVICE.color_samples as usize,
                         data: pixels,
                     };
                     debug!("Put pixels {} {} {} size {}",w,h,w*h,pixels.len());

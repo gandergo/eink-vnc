@@ -208,3 +208,26 @@ impl Framebuffer for Pixmap {
         self.height
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct ReadonlyPixmap<'a> {
+    pub width: u32,
+    pub height: u32,
+    pub samples: usize,
+    pub data: &'a Vec<u8>,
+}
+
+impl<'a> ReadonlyPixmap<'a> {
+    #[inline]
+    pub fn get_pixel(&self, x: u32, y: u32) -> Color {
+        if self.data.is_empty() {
+            return WHITE;
+        }
+        let addr = self.samples * (y * self.width + x) as usize;
+        if self.samples == 1 {
+            Color::Gray(self.data[addr])
+        } else {
+            Color::from_rgb(&self.data[addr..addr+3])
+        }
+    }
+}
