@@ -303,7 +303,7 @@ fn main() -> Result<(), Error> {
                     let pixmap = ReadonlyPixmap {
                         width: w as u32,
                         height: h as u32,
-                        samples: CURRENT_DEVICE.color_samples as usize,
+                        samples: CURRENT_DEVICE.color_samples() as usize,
                         data: pixels,
                     };
                     debug!("Put pixels {} {} {} size {}",w,h,w*h,pixels.len());
@@ -364,7 +364,7 @@ fn main() -> Result<(), Error> {
                         let dst_top = dst.top as u32;
 
                         let mut intermediary_pixmap =
-                            Pixmap::new(dst.width as u32, dst.height as u32);
+                            Pixmap::new(dst.width as u32, dst.height as u32, CURRENT_DEVICE.color_samples());
 
                         for y in 0..intermediary_pixmap.height {
                             for x in 0..intermediary_pixmap.width {
