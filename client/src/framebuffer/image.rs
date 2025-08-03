@@ -95,6 +95,16 @@ impl Framebuffer for Pixmap {
         }
     }
 
+    fn get_pixel(&self, x: u32, y: u32) -> Color {
+        let addr = self.samples * (y * self.width + x) as usize;
+
+        if self.samples == 1 {
+            Color::Gray(self.data[addr])
+        } else {
+            Color::Rgb(self.data[addr], self.data[addr+1], self.data[addr+2])
+        }
+    }
+
     fn set_blended_pixel(&mut self, x: u32, y: u32, color: Color, alpha: f32) {
         if alpha >= 1.0 {
             self.set_pixel(x, y, color);
