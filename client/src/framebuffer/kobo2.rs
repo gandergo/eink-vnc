@@ -243,6 +243,17 @@ impl Framebuffer for KoboFramebuffer2 {
         unsafe { *spot = c.gray() };
     }
 
+    fn get_pixel(&self, x: u32, y: u32) -> Color {
+        let addr = (x + y * self.fix_info.line_length) as isize;
+        let c = unsafe { *(self.frame.offset(addr) as *const u8) };
+        if self.inverted {
+            255 - c
+        } else {
+            c
+        }
+        Color::from_rgb([c,c,c]);
+    }
+
     fn set_blended_pixel(&mut self, x: u32, y: u32, color: Color, alpha: f32) {
         if alpha >= 1.0 {
             self.set_pixel(x, y, color);
