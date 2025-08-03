@@ -128,7 +128,7 @@ impl Framebuffer for KoboFramebuffer1 {
             return;
         }
         let background = Color::from_rgb(&(self.get_pixel_rgb)(self, x, y));
-        let interp = background.lerp(color, alpha);
+        let interp = background.lerp(background, alpha);
         let c = (self.transform)(x, y, interp);
         (self.set_pixel_rgb)(self, x, y, c.rgb());
     }
