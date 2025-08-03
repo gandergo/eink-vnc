@@ -2,10 +2,14 @@ mod linuxfb_sys;
 mod ion_sys;
 mod mxcfb_sys;
 mod sunxi_sys;
-mod image;
+pub(crate) mod image;
 mod transform;
 mod kobo1;
 mod kobo2;
+
+use crate::pt;
+use crate::rect;
+use crate::vec2;
 
 use anyhow::Error;
 use crate::geom::{Point, Rectangle, surface_area, nearest_segment_point, lerp};
@@ -33,6 +37,7 @@ pub enum UpdateMode {
 
 pub trait Framebuffer {
     fn set_pixel(&mut self, x: u32, y: u32, color: Color);
+    fn get_pixel(&self, x: u32, y: u32) -> Color;
     fn set_blended_pixel(&mut self, x: u32, y: u32, color: Color, alpha: f32);
     fn invert_region(&mut self, rect: &Rectangle);
     fn shift_region(&mut self, rect: &Rectangle, drift: u8);

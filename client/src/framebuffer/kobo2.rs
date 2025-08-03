@@ -247,7 +247,7 @@ impl Framebuffer for KoboFramebuffer2 {
         let addr = (x + y * self.fix_info.line_length) as isize;
         let c = unsafe { *(self.frame.offset(addr) as *const u8) };
         if self.inverted {
-            c = 255 - c;
+            Color::from_rgb(&[255-c,255-c,255-c])
         }
         Color::from_rgb(&[c,c,c])
     }
