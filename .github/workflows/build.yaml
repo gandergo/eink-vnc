@@ -77,7 +77,8 @@ jobs:
         shopt -s nullglob
         files=(libz.* libbz2.* libjpeg.* libpng16.* libgumbo.* libopenjp2.* libjbig2dec.*)
         test "${#files[@]}" -gt 0
-        cp -a "${files[@]}" "$sysroot/"
+        # The toolchain tree under /opt is owned by root.
+        sudo cp -a "${files[@]}" "$sysroot/"
 
     - name: Build
       working-directory: client
