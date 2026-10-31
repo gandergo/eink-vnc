@@ -84,12 +84,68 @@ fi
 command -v arm-linux-musleabihf-gcc >/dev/null
 command -v arm-linux-musleabihf-ar >/dev/null
 
+# Try each URL. mupdf.com redirects to casper.mupdf.com, and that TLS handshake
+# times out from GitHub runners (curl exit 28) if left to curl's default wait.
+fetch_file() {
+    dest=$1
+    shift
+    rm -f "$dest"
+    for url in "$@"; do
+        echo "fetching $url"
+        if curl -fL --connect-timeout 20 --max-time 180 --retry 2 --retry-all-errors \
+            -o "$dest" "$url"; then
+            return 0
+        fi
+        echo "could not fetch $url" >&2
+        rm -f "$dest"
+    done
+    echo "no download succeeded for $(basename "$dest")" >&2
+    return 1
+}
+
+check_sha256() {
+    file=$1
+    want=$2
+    got=$(sha256sum "$file" | awk '{print $1}')
+    if [ "$got" != "$want" ]; then
+        echo "checksum mismatch for $file" >&2
+        echo "got  $got" >&2
+        echo "want $want" >&2
+        return 1
+    fi
+}
+
 ROOT="${TMPDIR:-/tmp}/einkvnc-mupdf-1.27.0"
 mkdir -p "$ROOT"
 if [ ! -d "$ROOT/mupdf-1.27.0-source/include" ]; then
-    curl -L --retry 3 -o "$ROOT/mupdf.tar.gz" \
-        https://mupdf.com/downloads/archive/mupdf-1.27.0-source.tar.gz
-    tar -C "$ROOT" -xzf "$ROOT/mupdf.tar.gz"
+    unpacked=0
+    if fetch_file "$ROOT/mupdf.tar.gz" \
+        "https://mupdf.com/downloads/archive/mupdf-1.27.0-source.tar.gz"; then
+        if check_sha256 "$ROOT/mupdf.tar.gz" \
+            ae2442416de499182d37a526c6fa2bacc7a3bed5a888d113ca04844484dfe7c6; then
+            tar -C "$ROOT" -xzf "$ROOT/mupdf.tar.gz"
+            unpacked=1
+        fi
+    fi
+    if [ "$unpacked" -eq 0 ]; then
+        # Same tar as the .gz above, recompressed. sources.voidlinux.org is reachable
+        # when casper.mupdf.com is not.
+        if ! command -v lzip >/dev/null; then
+            if command -v sudo >/dev/null && command -v apt-get >/dev/null; then
+                sudo apt-get update
+                sudo apt-get install -y lzip
+            fi
+        fi
+        if ! command -v lzip >/dev/null; then
+            echo "lzip is required to unpack the MuPDF mirror" >&2
+            exit 1
+        fi
+        fetch_file "$ROOT/mupdf.tar.lz" \
+            "https://sources.voidlinux.org/mupdf-1.27.0/mupdf-1.27.0-source.tar.lz"
+        check_sha256 "$ROOT/mupdf.tar.lz" \
+            61b109c82093a1c39b1b7f58c04b6d8ad6fe8e83e266ce1d8423e1e5c9310911
+        lzip -dc "$ROOT/mupdf.tar.lz" | tar -C "$ROOT" -xf -
+    fi
 fi
 
 # Do not pick the host's libfreetype via pkg-config; those objects are the wrong architecture.
@@ -111,8 +167,12 @@ make -C "$ROOT/mupdf-1.27.0-source" -j"$(nproc)" build=release \
 # the bundled objects to avoid duplicate FT_* symbols.
 if [ ! -f "$ROOT/freetype/lib/libfreetype.a" ]; then
     if [ ! -d "$ROOT/freetype-2.13.3" ]; then
-        curl -L --retry 3 -o "$ROOT/freetype.tar.gz" \
-            https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.gz
+        fetch_file "$ROOT/freetype.tar.gz" \
+            "https://downloads.sourceforge.net/project/freetype/freetype2/2.13.3/freetype-2.13.3.tar.gz" \
+            "https://mirror.accum.se/mirror/gnu.org/savannah/freetype/freetype-2.13.3.tar.gz" \
+            "https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.gz"
+        check_sha256 "$ROOT/freetype.tar.gz" \
+            5c3a8e78f7b24c20b25b54ee575d6daa40007a5f4eea2845861c3409b3021747
         tar -C "$ROOT" -xzf "$ROOT/freetype.tar.gz"
     fi
     (
