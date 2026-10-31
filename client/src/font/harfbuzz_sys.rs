@@ -19,7 +19,12 @@ pub enum HbLanguage {}
 pub enum HbBuffer {}
 pub enum HbFont {}
 
-#[link(name="harfbuzz")]
+// Kobo's MuPDF archive exports HarfBuzz as fzhb_*. build.rs aliases hb_* to those,
+// so the arm musl target must not also pull in -lharfbuzz.
+#[cfg_attr(
+    not(all(target_os = "linux", target_arch = "arm")),
+    link(name = "harfbuzz")
+)]
 extern "C" {
     pub fn hb_ft_font_create(face: *mut FtFace, destroy: *const libc::c_void) -> *mut HbFont;
     pub fn hb_ft_font_changed(font: *mut HbFont);

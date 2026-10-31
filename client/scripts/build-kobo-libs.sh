@@ -1,11 +1,14 @@
 #!/bin/sh
-# Build the static MuPDF archives the Kobo musl target links against.
-# Requires arm-linux-musleabihf-gcc on PATH.
+# Build the static MuPDF archives the Kobo targets link against.
+# Default compiler prefix is the musl toolchain. The Linux gnueabihf workflow
+# sets TOOL_PREFIX=arm-linux-gnueabihf and puts scripts/linaro-armhf-gcc on
+# PATH under that name (Linaro gcc 4.9 cannot compile MuPDF's HarfBuzz).
 set -eu
 
 # Resolve from this script so the caller's working directory does not matter.
 CLIENT_DIR=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 cd "$CLIENT_DIR"
+TOOL_PREFIX=${TOOL_PREFIX:-arm-linux-musleabihf}
 
 # #[link(name="harfbuzz")] still asks for this archive on some checkouts.
 # It only has to exist: build.rs redirects hb_* onto MuPDF's fzhb_* symbols.
@@ -27,35 +30,35 @@ if [ -z "$HB_SRC" ]; then
     echo "hb_alloc.c was not found under $CLIENT_DIR" >&2
     exit 1
 fi
-command -v arm-linux-musleabihf-gcc >/dev/null
-command -v arm-linux-musleabihf-ar >/dev/null
+command -v ${TOOL_PREFIX}-gcc >/dev/null
+command -v ${TOOL_PREFIX}-ar >/dev/null
 # A fixed member name so a rerun replaces the object instead of appending one.
-arm-linux-musleabihf-gcc -c -O2 -o libs/hb_alloc.o "$HB_SRC"
+${TOOL_PREFIX}-gcc -c -O2 -o libs/hb_alloc.o "$HB_SRC"
 rm -f libs/libhballoc.a
-arm-linux-musleabihf-ar rcs libs/libhballoc.a libs/hb_alloc.o
+${TOOL_PREFIX}-ar rcs libs/libhballoc.a libs/hb_alloc.o
 rm -f libs/hb_alloc.o
 
 # Drop MuPDF's own copies. They allocate through a context the UI never sets,
 # and they collide with libhballoc.a if both stay in the link.
-if [ -f libs/libmupdf.a ] && arm-linux-musleabihf-ar t libs/libmupdf.a | grep -qx harfbuzz.o; then
-    arm-linux-musleabihf-ar d libs/libmupdf.a harfbuzz.o
+if [ -f libs/libmupdf.a ] && ${TOOL_PREFIX}-ar t libs/libmupdf.a | grep -qx harfbuzz.o; then
+    ${TOOL_PREFIX}-ar d libs/libmupdf.a harfbuzz.o
 fi
 
 if [ ! -f libs/libharfbuzz.a ]; then
-    command -v arm-linux-musleabihf-gcc >/dev/null
-    command -v arm-linux-musleabihf-ar >/dev/null
+    command -v ${TOOL_PREFIX}-gcc >/dev/null
+    command -v ${TOOL_PREFIX}-ar >/dev/null
     stub=$(mktemp)
-    echo 'void einkvnc_harfbuzz_stub(void) {}' | arm-linux-musleabihf-gcc -c -x c -o "$stub" -
-    arm-linux-musleabihf-ar rcs libs/libharfbuzz.a "$stub"
+    echo 'void einkvnc_harfbuzz_stub(void) {}' | ${TOOL_PREFIX}-gcc -c -x c -o "$stub" -
+    ${TOOL_PREFIX}-ar rcs libs/libharfbuzz.a "$stub"
     rm -f "$stub"
 fi
 
 write_font_aliases() {
-    command -v arm-linux-musleabihf-gcc >/dev/null
-    command -v arm-linux-musleabihf-nm >/dev/null
+    command -v ${TOOL_PREFIX}-gcc >/dev/null
+    command -v ${TOOL_PREFIX}-nm >/dev/null
     symbols=$(mktemp)
     wanted=$(mktemp)
-    arm-linux-musleabihf-nm -g --defined-only libs/libmupdf.a > "$symbols"
+    ${TOOL_PREFIX}-nm -g --defined-only libs/libmupdf.a > "$symbols"
     grep -o '_binary_[A-Za-z0-9_]*' src/font/mod.rs | grep -v resources_fonts | sort -u > "$wanted"
     awk -v wanted="$wanted" '
         BEGIN {
@@ -74,15 +77,22 @@ write_font_aliases() {
     test "$(wc -l < libs/font-aliases.txt)" -gt 100
 }
 
-if [ -f libs/libmupdf.a ] && [ -f libs/libmupdf-third.a ] && [ -f libs/libmupdf_wrapper.a ] \
-    && [ -f libs/libfreetype.a ]; then
+# A missing stamp is the original musl output, from before the prefix was recorded.
+# Reusing those archives for arm-linux-gnueabihf fails at link time (musl time64 symbols).
+stamp=arm-linux-musleabihf
+if [ -f libs/toolchain-stamp ]; then
+    stamp=$(cat libs/toolchain-stamp)
+fi
+if [ "$stamp" = "$TOOL_PREFIX" ] && [ -f libs/libmupdf.a ] && [ -f libs/libmupdf-third.a ] \
+    && [ -f libs/libmupdf_wrapper.a ] && [ -f libs/libfreetype.a ]; then
     write_font_aliases
-    echo "client/libs already has the native archives"
+    printf '%s\n' "$TOOL_PREFIX" > libs/toolchain-stamp
+    echo "client/libs already has the $TOOL_PREFIX archives"
     exit 0
 fi
 
-command -v arm-linux-musleabihf-gcc >/dev/null
-command -v arm-linux-musleabihf-ar >/dev/null
+command -v ${TOOL_PREFIX}-gcc >/dev/null
+command -v ${TOOL_PREFIX}-ar >/dev/null
 
 # Try each URL. mupdf.com redirects to casper.mupdf.com, and that TLS handshake
 # times out from GitHub runners (curl exit 28) if left to curl's default wait.
@@ -115,7 +125,13 @@ check_sha256() {
     fi
 }
 
-ROOT="${TMPDIR:-/tmp}/einkvnc-mupdf-1.27.0"
+# Keep the musl object tree where it already is. Any other prefix gets its own
+# tree so a musl libfreetype.a is not copied into the gnueabihf link.
+if [ "$TOOL_PREFIX" = "arm-linux-musleabihf" ]; then
+    ROOT="${TMPDIR:-/tmp}/einkvnc-mupdf-1.27.0"
+else
+    ROOT="${TMPDIR:-/tmp}/einkvnc-mupdf-1.27.0-${TOOL_PREFIX}"
+fi
 mkdir -p "$ROOT"
 if [ ! -d "$ROOT/mupdf-1.27.0-source/include" ]; then
     unpacked=0
@@ -152,11 +168,11 @@ fi
 export PKG_CONFIG=/bin/false
 
 make -C "$ROOT/mupdf-1.27.0-source" -j"$(nproc)" build=release \
-    CC=arm-linux-musleabihf-gcc \
-    CXX=arm-linux-musleabihf-g++ \
-    LD=arm-linux-musleabihf-ld \
-    AR=arm-linux-musleabihf-ar \
-    RANLIB=arm-linux-musleabihf-ranlib \
+    CC=${TOOL_PREFIX}-gcc \
+    CXX=${TOOL_PREFIX}-g++ \
+    LD=${TOOL_PREFIX}-ld \
+    AR=${TOOL_PREFIX}-ar \
+    RANLIB=${TOOL_PREFIX}-ranlib \
     HAVE_X11=no \
     HAVE_GLUT=no \
     HAVE_LIBCRYPTO=no \
@@ -177,7 +193,7 @@ if [ ! -f "$ROOT/freetype/lib/libfreetype.a" ]; then
     fi
     (
         cd "$ROOT/freetype-2.13.3"
-        ./configure --host=arm-linux-musleabihf --prefix="$ROOT/freetype" \
+        ./configure --host="$TOOL_PREFIX" --prefix="$ROOT/freetype" \
             --enable-static --disable-shared \
             --without-png --without-zlib --without-brotli --without-harfbuzz \
             --without-bzip2
@@ -188,12 +204,12 @@ fi
 
 mkdir -p libs
 cp "$ROOT/mupdf-1.27.0-source/build/release/libmupdf.a" libs/libmupdf.a
-if arm-linux-musleabihf-ar t libs/libmupdf.a | grep -qx harfbuzz.o; then
-    arm-linux-musleabihf-ar d libs/libmupdf.a harfbuzz.o
+if ${TOOL_PREFIX}-ar t libs/libmupdf.a | grep -qx harfbuzz.o; then
+    ${TOOL_PREFIX}-ar d libs/libmupdf.a harfbuzz.o
 fi
 cp "$ROOT/mupdf-1.27.0-source/build/release/libmupdf-third.a" libs/libmupdf-third.a
 cp "$ROOT/freetype/lib/libfreetype.a" libs/libfreetype.a
-arm-linux-musleabihf-ar d libs/libmupdf-third.a \
+${TOOL_PREFIX}-ar d libs/libmupdf-third.a \
     ftbase.o ftbbox.o ftbitmap.o ftdebug.o ftfstype.o ftgasp.o ftglyph.o ftinit.o \
     ftstroke.o ftsynth.o ftsystem.o fttype1.o cff.o type1cid.o psaux.o pshinter.o \
     psnames.o raster.o sfnt.o smooth.o truetype.o type1.o
@@ -216,10 +232,11 @@ if [ -z "$WRAPPER" ]; then
     exit 1
 fi
 
-arm-linux-musleabihf-gcc -c -O2 \
+${TOOL_PREFIX}-gcc -c -O2 \
     -I "$ROOT/mupdf-1.27.0-source/include" \
     -o "$ROOT/mupdf_wrapper.o" \
     "$WRAPPER"
-arm-linux-musleabihf-ar rcs libs/libmupdf_wrapper.a "$ROOT/mupdf_wrapper.o"
+${TOOL_PREFIX}-ar rcs libs/libmupdf_wrapper.a "$ROOT/mupdf_wrapper.o"
 write_font_aliases
-echo "wrote client/libs/libmupdf.a client/libs/libmupdf-third.a client/libs/libfreetype.a client/libs/libmupdf_wrapper.a"
+printf '%s\n' "$TOOL_PREFIX" > libs/toolchain-stamp
+echo "wrote client/libs for $TOOL_PREFIX"
