@@ -1,116 +1,50 @@
-# Linux build from the Kobo VNC compilation instructions:
-# Linaro gcc 4.9.4 arm-linux-gnueabihf, Ubuntu 24.04 armhf libraries,
-# then `cargo build --target armv7-unknown-linux-gnueabihf`.
-# releases.linaro.org no longer serves the toolchain; the download below is that same tarball.
-name: Build Linux
+name: Build
 on: [push, pull_request, workflow_dispatch]
 
 jobs:
-  build_gnueabihf:
-    name: einkvnc-gnueabihf
-    runs-on: ubuntu-24.04
+  build_fbink:
+    name: einkvnc
+    runs-on: ubuntu-latest
     steps:
     - name: Checkout
       uses: actions/checkout@v4
       with:
         submodules: recursive
 
+    # cross + ewpratten/kobo-cross-armhf cannot build this tree: that image
+    # ships Rust 1.59 and has no FreeType, HarfBuzz, or MuPDF.
     - name: Install stable toolchain
       uses: dtolnay/rust-toolchain@stable
       with:
-        targets: armv7-unknown-linux-gnueabihf
+        targets: arm-unknown-linux-musleabihf
 
-    - name: Install Linaro armhf sysroot
+    - name: Install host build tools
       run: |
-        # The sysroot (glibc 2.19) is what the binary links against.
-        # Compiling MuPDF still needs a newer g++, installed in the next step:
-        # Linaro gcc 4.9 rejects MuPDF 1.27's bundled HarfBuzz.
-        curl -fL --retry 5 --retry-all-errors -o /tmp/gcc-linaro-armhf.tar.xz \
-          https://mirrors.dotsrc.org/armbian-dl/_toolchain/gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabihf.tar.xz
-        sudo tar -C /opt -xJf /tmp/gcc-linaro-armhf.tar.xz
-        test -f /opt/gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabihf/arm-linux-gnueabihf/libc/usr/include/stdio.h
-
-    - name: Enable armhf packages
-      run: |
-        sudo dpkg --add-architecture armhf
-        sudo tee /etc/apt/sources.list.d/ubuntu.sources >/dev/null << 'EOF'
-        Types: deb
-        URIs: http://archive.ubuntu.com/ubuntu/
-        Suites: noble noble-updates noble-backports
-        Components: main universe restricted multiverse
-        Architectures: amd64
-        Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-
-        Types: deb
-        URIs: http://security.ubuntu.com/ubuntu/
-        Suites: noble-security
-        Components: main universe restricted multiverse
-        Architectures: amd64
-        Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-
-        Types: deb
-        URIs: http://ports.ubuntu.com/ubuntu-ports/
-        Suites: noble noble-updates noble-backports noble-security
-        Components: main restricted universe multiverse
-        Architectures: armhf
-        Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-        EOF
         sudo apt-get update
+        sudo apt-get install -y build-essential curl ca-certificates python3 lzip
 
-    - name: Install armhf libraries
+    # musl.cc does not accept connections from GitHub-hosted runners.
+    # This asset is the same tarball (sha256 below, 102391022 bytes).
+    - name: Install musl cross compiler
       run: |
-        # noble names the JBIG2 development package libjbig2dec0-dev.
-        sudo apt-get install -y \
-          gcc-arm-linux-gnueabihf \
-          g++-arm-linux-gnueabihf \
-          lzip \
-          libz-dev:armhf \
-          libbz2-dev:armhf \
-          libjpeg-dev:armhf \
-          libpng-dev:armhf \
-          libgumbo-dev:armhf \
-          libopenjp2-7-dev:armhf \
-          libjbig2dec0-dev:armhf
-        sysroot=/opt/gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabihf/arm-linux-gnueabihf/libc/lib
-        cd /usr/lib/arm-linux-gnueabihf
-        shopt -s nullglob
-        files=(libz.* libbz2.* libjpeg.* libpng16.* libgumbo.* libopenjp2.* libjbig2dec.*)
-        test "${#files[@]}" -gt 0
-        # The toolchain tree under /opt is owned by root.
-        sudo cp -a "${files[@]}" "$sysroot/"
-
-    - name: Install the sysroot compiler wrapper
-      run: |
-        # Named arm-linux-gnueabihf-gcc so MuPDF's --host probe and cargo share it.
-        # It calls Ubuntu's gcc 13 with --sysroot set to the Linaro libc.
-        bindir=/opt/einkvnc-armhf/bin
-        sudo mkdir -p "$bindir"
-        sudo cp client/scripts/linaro-armhf-gcc "$bindir/arm-linux-gnueabihf-gcc"
-        sudo cp client/scripts/linaro-armhf-gcc "$bindir/arm-linux-gnueabihf-g++"
-        sudo chmod 755 "$bindir/arm-linux-gnueabihf-gcc" "$bindir/arm-linux-gnueabihf-g++"
-        for tool in ar nm ranlib ld; do
-          sudo ln -sfn "/usr/bin/arm-linux-gnueabihf-$tool" "$bindir/arm-linux-gnueabihf-$tool"
-        done
-        echo "$bindir" >> "$GITHUB_PATH"
-        cat >> client/.cargo/config.toml << EOF
-
-        [target.armv7-unknown-linux-gnueabihf]
-        linker = "$bindir/arm-linux-gnueabihf-gcc"
-        EOF
+        curl -fL --retry 5 --retry-all-errors -o /tmp/arm-linux-musleabihf-cross.tgz \
+          https://github.com/musl-cc/musl.cc/releases/download/v0.0.1/arm-linux-musleabihf-cross.tgz
+        echo "11e155a090789c854afb5d91e57c81f441ccdb92f7f277789c3a6d5884a68e58  /tmp/arm-linux-musleabihf-cross.tgz" | sha256sum -c -
+        sudo tar -C /opt -xzf /tmp/arm-linux-musleabihf-cross.tgz
+        echo /opt/arm-linux-musleabihf-cross/bin >> "$GITHUB_PATH"
 
     - name: Build static MuPDF and FreeType
-      env:
-        TOOL_PREFIX: arm-linux-gnueabihf
       run: bash client/scripts/build-kobo-libs.sh
 
     - name: Build
       working-directory: client
       env:
-        CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: /opt/einkvnc-armhf/bin/arm-linux-gnueabihf-gcc
-      run: cargo build --target armv7-unknown-linux-gnueabihf
+        CARGO_TARGET_ARM_UNKNOWN_LINUX_MUSLEABIHF_LINKER: arm-linux-musleabihf-gcc
+        CARGO_TARGET_ARM_UNKNOWN_LINUX_MUSLEABIHF_RUSTFLAGS: -C target-feature=+crt-static
+      run: cargo build --release --target=arm-unknown-linux-musleabihf
 
-    - name: Upload binary
+    - name: Upload release archive
       uses: actions/upload-artifact@v4
       with:
-        name: eInkVnc-gnueabihf
-        path: client/target/armv7-unknown-linux-gnueabihf/debug/einkvnc
+        name: eInkVnc
+        path: client/target/arm-unknown-linux-musleabihf/release/einkvnc
