@@ -23,9 +23,13 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y build-essential curl ca-certificates python3
 
+    # musl.cc does not accept connections from GitHub-hosted runners.
+    # This asset is the same tarball (sha256 below, 102391022 bytes).
     - name: Install musl cross compiler
       run: |
-        curl -L --retry 3 -o /tmp/arm-linux-musleabihf-cross.tgz https://musl.cc/arm-linux-musleabihf-cross.tgz
+        curl -fL --retry 5 --retry-all-errors -o /tmp/arm-linux-musleabihf-cross.tgz \
+          https://github.com/musl-cc/musl.cc/releases/download/v0.0.1/arm-linux-musleabihf-cross.tgz
+        echo "11e155a090789c854afb5d91e57c81f441ccdb92f7f277789c3a6d5884a68e58  /tmp/arm-linux-musleabihf-cross.tgz" | sha256sum -c -
         sudo tar -C /opt -xzf /tmp/arm-linux-musleabihf-cross.tgz
         echo /opt/arm-linux-musleabihf-cross/bin >> "$GITHUB_PATH"
 
