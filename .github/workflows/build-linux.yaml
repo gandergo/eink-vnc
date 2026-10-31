@@ -1,11 +1,11 @@
 # Linux build from the Kobo VNC compilation instructions:
 # Linaro gcc 4.9.4 as the linker, then
 # `cargo build --target armv7-unknown-linux-gnueabihf`.
-# The viewer no longer links MuPDF, FreeType, or HarfBuzz, so the armhf
-# library copy from those notes is not required.
+# FreeType is built static with that compiler. MuPDF and HarfBuzz are not
+# linked, so the armhf library copy from those notes is not required.
 # releases.linaro.org no longer serves the toolchain; the download below is that same tarball.
 name: Build Linux
-on: [push, pull_request, workflow_dispatch]
+on: [workflow_dispatch]
 
 jobs:
   build_gnueabihf:
@@ -35,6 +35,9 @@ jobs:
         [target.armv7-unknown-linux-gnueabihf]
         linker = "$linker"
         EOF
+
+    - name: Build static FreeType
+      run: TOOL_PREFIX=arm-linux-gnueabihf ./client/scripts/build-freetype.sh
 
     - name: Build
       working-directory: client

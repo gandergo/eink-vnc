@@ -26,6 +26,9 @@ jobs:
         sudo tar -C /opt -xzf /tmp/arm-linux-musleabihf-cross.tgz
         echo /opt/arm-linux-musleabihf-cross/bin >> "$GITHUB_PATH"
 
+    - name: Build static FreeType
+      run: TOOL_PREFIX=arm-linux-musleabihf ./client/scripts/build-freetype.sh
+
     - name: Build
       working-directory: client
       env:
