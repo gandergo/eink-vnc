@@ -3,7 +3,9 @@
 # Requires arm-linux-musleabihf-gcc on PATH.
 set -eu
 
-cd "$(dirname "$0")/.."
+# Resolve from this script so the caller's working directory does not matter.
+CLIENT_DIR=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+cd "$CLIENT_DIR"
 
 if [ -f libs/libmupdf.a ] && [ -f libs/libmupdf-third.a ] && [ -f libs/libmupdf_wrapper.a ] \
     && [ -f libs/libfreetype.a ]; then
@@ -65,9 +67,27 @@ arm-linux-musleabihf-ar d libs/libmupdf-third.a \
     ftstroke.o ftsynth.o ftsystem.o fttype1.o cff.o type1cid.o psaux.o pshinter.o \
     psnames.o raster.o sfnt.o smooth.o truetype.o type1.o
 
+# Prefer client/native. Also accept "client/ native": a checkout where the
+# directory name itself has a leading space, which gcc cannot open as native/.
+WRAPPER=""
+for candidate in \
+    "$CLIENT_DIR/native/mupdf_wrapper.c" \
+    "$CLIENT_DIR/ native/mupdf_wrapper.c"
+do
+    if [ -f "$candidate" ]; then
+        WRAPPER=$candidate
+        break
+    fi
+done
+if [ -z "$WRAPPER" ]; then
+    echo "mupdf_wrapper.c was not found under $CLIENT_DIR" >&2
+    find "$CLIENT_DIR" -name 'mupdf_wrapper.c' -print >&2 || true
+    exit 1
+fi
+
 arm-linux-musleabihf-gcc -c -O2 \
     -I "$ROOT/mupdf-1.27.0-source/include" \
     -o "$ROOT/mupdf_wrapper.o" \
-    native/mupdf_wrapper.c
+    "$WRAPPER"
 arm-linux-musleabihf-ar rcs libs/libmupdf_wrapper.a "$ROOT/mupdf_wrapper.o"
 echo "wrote client/libs/libmupdf.a client/libs/libmupdf-third.a client/libs/libfreetype.a client/libs/libmupdf_wrapper.a"
