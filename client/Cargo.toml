@@ -21,6 +21,13 @@ flate2 = "1.0.24"
 nix = "0.24.2"
 anyhow = "1.0.58"
 fxhash = "0.2.1"
+bitflags = "2.13.2"
+globset = "0.4.21"
+walkdir = "2.5.0"
+chrono = "0.4.45"
+entities = "1.0.1"
+thiserror = "2.0.21"
+downcast-rs = "2.0.2"
 
 [profile.release-minsized]
 inherits = "release"
