@@ -28,13 +28,12 @@ impl event_params {
                 Event::Device(de) => {
                     match de {
                         DeviceEvent::Finger {
-                            id,
-                            time,
                             status,
                             position,
+                            ..
                         } => {
-                            match id {
-                                0 | 1 | 2 => {
+                            // Libra Colour reports kernel tracking ids (0, 1, 2, 3, …),
+                            // not a recycled slot index. Any non-negative id is a real contact.
                                     match status {
                                         FingerStatus::Up => {
                                             //we only want send right click once we release long_tap
@@ -269,11 +268,6 @@ impl event_params {
                                             }
                                         }
                                     }
-                                }
-                                _ => {
-                                    println!("Unknown finger ID")
-                                }
-                            }
                         }
                         DeviceEvent::Button {
                             code: ButtonCode::Power,

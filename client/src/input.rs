@@ -25,6 +25,7 @@ pub const EV_ABS: u16 = 0x03;
 pub const EV_MSC: u16 = 0x04;
 
 // Event codes
+pub const ABS_MT_SLOT: u16 = 0x2f;
 pub const ABS_MT_TRACKING_ID: u16 = 0x39;
 pub const ABS_MT_POSITION_X: u16 = 0x35;
 pub const ABS_MT_POSITION_Y: u16 = 0x36;
@@ -352,15 +353,44 @@ impl Default for TouchState {
     }
 }
 
+/// Return the contact being updated.
+///
+/// Protocol B move frames omit `ABS_MT_TRACKING_ID`. When `slot_protocol` is set,
+/// revive the contact that is already down so those frames still move it. A
+/// tracking id of -1 puts the contact in `lifted` and must not revive it.
+fn active_contact<'a>(
+    slot_protocol: bool,
+    id: i32,
+    lifted: &[i32],
+    fingers: &FxHashMap<i32, Point>,
+    packets: &'a mut FxHashMap<i32, TouchState>,
+) -> Option<&'a mut TouchState> {
+    if id < 0 || lifted.contains(&id) {
+        return None;
+    }
+    if !packets.contains_key(&id) {
+        let position = match fingers.get(&id) {
+            Some(&position) if slot_protocol => position,
+            _ => return None,
+        };
+        packets.insert(id, TouchState { position, pressure: 1 });
+    }
+    packets.get_mut(&id)
+}
+
 pub fn parse_device_events(rx: &Receiver<InputEvent>, ty: &Sender<DeviceEvent>, display: Display, button_scheme: ButtonScheme) {
     let mut id = 0;
+    let mut slot: i32 = 0;
     let mut last_activity = -60;
     let Display { mut dims, mut rotation } = display;
 
 
     let mut fingers: FxHashMap<i32, Point> = FxHashMap::default();
     let mut packets: FxHashMap<i32, TouchState> = FxHashMap::default();
+    let mut slot_ids: FxHashMap<i32, i32> = FxHashMap::default();
+    let mut lifted: Vec<i32> = Vec::new();
     let proto = CURRENT_DEVICE.proto;
+    let slot_protocol = CURRENT_DEVICE.mt_protocol_b();
 
     let mut tc = match proto {
         TouchProto::Single => SINGLE_TOUCH_CODES,
@@ -384,13 +414,33 @@ pub fn parse_device_events(rx: &Receiver<InputEvent>, ty: &Sender<DeviceEvent>, 
 
     while let Ok(evt) = rx.recv() {
         if evt.kind == EV_ABS {
-            if evt.code == ABS_MT_TRACKING_ID {
+            if evt.code == ABS_MT_SLOT {
+                slot = evt.value;
+                if let Some(&mapped) = slot_ids.get(&slot) {
+                    id = mapped;
+                }
+            } else if evt.code == ABS_MT_TRACKING_ID {
                 if evt.value >= 0 {
                     id = evt.value;
-                    packets.insert(id, TouchState::default());
+                    if slot_protocol {
+                        slot_ids.insert(slot, id);
+                        lifted.retain(|&lifted_id| lifted_id != id);
+                        let position = fingers.get(&id).copied().unwrap_or_default();
+                        // A live tracking id is a contact even when this frame has no pressure sample.
+                        packets.entry(id).or_insert(TouchState { position, pressure: 1 });
+                    } else {
+                        packets.insert(id, TouchState::default());
+                    }
+                } else if slot_protocol && id >= 0 {
+                    if !lifted.contains(&id) {
+                        lifted.push(id);
+                    }
+                    packets.remove(&id);
+                    slot_ids.remove(&slot);
+                    id = -1;
                 }
             } else if evt.code == tc.x {
-                if let Some(state) = packets.get_mut(&id) {
+                if let Some(state) = active_contact(slot_protocol, id, &lifted, &fingers, &mut packets) {
                     state.position.x = if mirror_x {
                         dims.0 as i32 - 1 - evt.value
                     } else {
@@ -398,7 +448,7 @@ pub fn parse_device_events(rx: &Receiver<InputEvent>, ty: &Sender<DeviceEvent>, 
                     };
                 }
             } else if evt.code == tc.y {
-                if let Some(state) = packets.get_mut(&id) {
+                if let Some(state) = active_contact(slot_protocol, id, &lifted, &fingers, &mut packets) {
                     state.position.y = if mirror_y {
                         dims.1 as i32 - 1 - evt.value
                     } else {
@@ -406,7 +456,7 @@ pub fn parse_device_events(rx: &Receiver<InputEvent>, ty: &Sender<DeviceEvent>, 
                     };
                 }
             } else if evt.code == tc.pressure {
-                if let Some(state) = packets.get_mut(&id) {
+                if let Some(state) = active_contact(slot_protocol, id, &lifted, &fingers, &mut packets) {
                     state.pressure = evt.value;
                     if proto == TouchProto::Single && CURRENT_DEVICE.mark() == 3 && state.pressure == 0 {
                         state.position.x = dims.0 as i32 - 1 - state.position.x;
@@ -422,7 +472,10 @@ pub fn parse_device_events(rx: &Receiver<InputEvent>, ty: &Sender<DeviceEvent>, 
                 ty.send(DeviceEvent::UserActivity).ok();
             }
 
-            if proto == TouchProto::MultiB {
+            // Snow-style MultiB reports every active contact in each frame, so a
+            // missing packet is a lift. Protocol B only reports what changed, and
+            // lifts with tracking id -1 (handled below).
+            if proto == TouchProto::MultiB && !slot_protocol {
                 fingers.retain(|other_id, other_position| {
                     packets.contains_key(&other_id) ||
                         ty.send(DeviceEvent::Finger {
@@ -463,6 +516,19 @@ pub fn parse_device_events(rx: &Receiver<InputEvent>, ty: &Sender<DeviceEvent>, 
                         position: state.position,
                     }).unwrap();
                     fingers.insert(id, state.position);
+                }
+            }
+
+            if slot_protocol {
+                for lifted_id in lifted.drain(..) {
+                    if let Some(position) = fingers.remove(&lifted_id) {
+                        ty.send(DeviceEvent::Finger {
+                            id: lifted_id,
+                            time: seconds(evt.time),
+                            status: FingerStatus::Up,
+                            position,
+                        }).ok();
+                    }
                 }
             }
 
@@ -523,6 +589,123 @@ pub fn parse_device_events(rx: &Receiver<InputEvent>, ty: &Sender<DeviceEvent>, 
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use crate::device::{Model, CURRENT_DEVICE};
+    use crate::framebuffer::Display;
+    use crate::settings::ButtonScheme;
+
+    use super::{
+        device_events, DeviceEvent, FingerStatus, InputEvent, ABS_MT_POSITION_X, ABS_MT_POSITION_Y,
+        ABS_MT_PRESSURE, ABS_MT_SLOT, ABS_MT_TRACKING_ID, EV_ABS, EV_SYN, SYN_REPORT,
+    };
+
+    fn ev(kind: u16, code: u16, value: i32) -> InputEvent {
+        InputEvent {
+            time: libc::timeval { tv_sec: 1, tv_usec: 0 },
+            kind,
+            code,
+            value,
+        }
+    }
+
+    fn abs(code: u16, value: i32) -> InputEvent {
+        ev(EV_ABS, code, value)
+    }
+
+    fn syn() -> InputEvent {
+        ev(EV_SYN, SYN_REPORT, 0)
+    }
+
+    fn finger_events(events: Vec<InputEvent>) -> Vec<(FingerStatus, i32, i32, i32)> {
+        let (tx, rx) = mpsc::channel();
+        let out = device_events(
+            rx,
+            Display { dims: (1264, 1680), rotation: 0 },
+            ButtonScheme::Natural,
+        );
+        for event in events {
+            tx.send(event).unwrap();
+        }
+        drop(tx);
+        out.into_iter()
+            .filter_map(|event| match event {
+                DeviceEvent::Finger { status, id, position, .. } => {
+                    Some((status, id, position.x, position.y))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn libra_colour_protocol_b_tracks_kernel_ids_across_delta_frames() {
+        // CURRENT_DEVICE is process-global. Set the codename before the first touch.
+        std::env::set_var("PRODUCT", "monza");
+        assert_eq!(CURRENT_DEVICE.model, Model::LibraColour);
+        assert!(CURRENT_DEVICE.mt_protocol_b());
+
+        let events = finger_events(vec![
+            // Contact 45, the sort of id the kernel assigns after a few taps.
+            abs(ABS_MT_SLOT, 0),
+            abs(ABS_MT_TRACKING_ID, 45),
+            abs(ABS_MT_POSITION_X, 10),
+            abs(ABS_MT_POSITION_Y, 20),
+            abs(ABS_MT_PRESSURE, 40),
+            syn(),
+            // An empty report must not look like a lift.
+            syn(),
+            // Move frame: slot and coordinates only. No tracking id.
+            abs(ABS_MT_SLOT, 0),
+            abs(ABS_MT_POSITION_X, 15),
+            abs(ABS_MT_POSITION_Y, 25),
+            syn(),
+            // Second finger lands while the first is still down.
+            abs(ABS_MT_SLOT, 1),
+            abs(ABS_MT_TRACKING_ID, 46),
+            abs(ABS_MT_POSITION_X, 80),
+            abs(ABS_MT_POSITION_Y, 90),
+            syn(),
+            // Moving finger 45 must not release finger 46.
+            abs(ABS_MT_SLOT, 0),
+            abs(ABS_MT_POSITION_X, 16),
+            abs(ABS_MT_POSITION_Y, 26),
+            syn(),
+            abs(ABS_MT_SLOT, 0),
+            abs(ABS_MT_TRACKING_ID, -1),
+            syn(),
+            // Id 3 is outside the old 0/1/2 whitelist, and this frame has no pressure.
+            abs(ABS_MT_SLOT, 0),
+            abs(ABS_MT_TRACKING_ID, 3),
+            abs(ABS_MT_POSITION_X, 1),
+            abs(ABS_MT_POSITION_Y, 2),
+            syn(),
+            abs(ABS_MT_SLOT, 1),
+            abs(ABS_MT_TRACKING_ID, -1),
+            syn(),
+            abs(ABS_MT_SLOT, 0),
+            abs(ABS_MT_TRACKING_ID, -1),
+            syn(),
+        ]);
+
+        assert_eq!(
+            events,
+            vec![
+                (FingerStatus::Down, 45, 10, 20),
+                (FingerStatus::Motion, 45, 15, 25),
+                (FingerStatus::Down, 46, 80, 90),
+                (FingerStatus::Motion, 45, 16, 26),
+                (FingerStatus::Up, 45, 16, 26),
+                (FingerStatus::Down, 3, 1, 2),
+                (FingerStatus::Up, 46, 80, 90),
+                (FingerStatus::Up, 3, 1, 2),
+            ]
+        );
     }
 }
 

@@ -469,6 +469,13 @@ impl Device { //for all device enums implment this function
         }
     }
 
+    /// Libra Colour's Elan panel speaks Linux multitouch protocol B.
+    /// Each contact gets a fresh `ABS_MT_TRACKING_ID` from the kernel, move
+    /// frames omit that id, and a lift is reported as `-1`.
+    pub fn mt_protocol_b(&self) -> bool {
+        matches!(self.model, Model::LibraColour)
+    }
+
     pub fn mark(&self) -> u8 {
         match self.model {
             Model::LibraColour => 13,
