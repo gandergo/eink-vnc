@@ -7,8 +7,45 @@ set -eu
 CLIENT_DIR=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 cd "$CLIENT_DIR"
 
+# #[link(name="harfbuzz")] still asks for this archive on some checkouts.
+# It only has to exist: build.rs redirects hb_* onto MuPDF's fzhb_* symbols.
+mkdir -p libs
+if [ ! -f libs/libharfbuzz.a ]; then
+    command -v arm-linux-musleabihf-gcc >/dev/null
+    command -v arm-linux-musleabihf-ar >/dev/null
+    stub=$(mktemp)
+    echo 'void einkvnc_harfbuzz_stub(void) {}' | arm-linux-musleabihf-gcc -c -x c -o "$stub" -
+    arm-linux-musleabihf-ar rcs libs/libharfbuzz.a "$stub"
+    rm -f "$stub"
+fi
+
+write_font_aliases() {
+    command -v arm-linux-musleabihf-gcc >/dev/null
+    command -v arm-linux-musleabihf-nm >/dev/null
+    symbols=$(mktemp)
+    wanted=$(mktemp)
+    arm-linux-musleabihf-nm -g --defined-only libs/libmupdf.a > "$symbols"
+    grep -o '_binary_[A-Za-z0-9_]*' src/font/mod.rs | grep -v resources_fonts | sort -u > "$wanted"
+    awk -v wanted="$wanted" '
+        BEGIN {
+            while ((getline name < wanted) > 0) need[name] = 1
+        }
+        $NF ~ /^_binary_resources_fonts_(droid|noto)_.*_start$/ {
+            long = $NF
+            body = long
+            sub(/^_binary_resources_fonts_(droid|noto)_/, "", body)
+            sub(/_start$/, "", body)
+            short = "_binary_" body
+            if (need[short]) print short, long
+        }
+    ' "$symbols" > libs/font-aliases.txt
+    rm -f "$symbols" "$wanted"
+    test "$(wc -l < libs/font-aliases.txt)" -gt 100
+}
+
 if [ -f libs/libmupdf.a ] && [ -f libs/libmupdf-third.a ] && [ -f libs/libmupdf_wrapper.a ] \
     && [ -f libs/libfreetype.a ]; then
+    write_font_aliases
     echo "client/libs already has the native archives"
     exit 0
 fi
@@ -90,4 +127,5 @@ arm-linux-musleabihf-gcc -c -O2 \
     -o "$ROOT/mupdf_wrapper.o" \
     "$WRAPPER"
 arm-linux-musleabihf-ar rcs libs/libmupdf_wrapper.a "$ROOT/mupdf_wrapper.o"
+write_font_aliases
 echo "wrote client/libs/libmupdf.a client/libs/libmupdf-third.a client/libs/libfreetype.a client/libs/libmupdf_wrapper.a"

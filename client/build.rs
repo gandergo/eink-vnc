@@ -19,6 +19,23 @@ fn main() {
         // Static MuPDF from scripts/build-kobo-libs.sh. FreeType and HarfBuzz
         // live in libmupdf-third.a; scan the group so either order resolves.
         println!("cargo:rustc-link-search=native=libs");
+        // Plato's arm objects use short _binary_* font names. Force MuPDF's
+        // long symbols out of the archive before aliasing the short names.
+        let manifest = env::var("CARGO_MANIFEST_DIR").unwrap();
+        let aliases = format!("{manifest}/libs/font-aliases.txt");
+        println!("cargo:rerun-if-changed={aliases}");
+        let text = std::fs::read_to_string(&aliases)
+            .unwrap_or_else(|err| panic!("read {aliases}: {err}. Run scripts/build-kobo-libs.sh"));
+        let mut pairs = Vec::new();
+        for line in text.lines() {
+            let mut parts = line.split_whitespace();
+            let Some(short) = parts.next() else { continue };
+            let Some(long) = parts.next() else { continue };
+            pairs.push((short.to_string(), long.to_string()));
+        }
+        for (_, long) in &pairs {
+            println!("cargo:rustc-link-arg=-Wl,--undefined={long}");
+        }
         println!("cargo:rustc-link-arg=-Wl,--start-group");
         println!("cargo:rustc-link-arg=-lmupdf_wrapper");
         println!("cargo:rustc-link-arg=-lmupdf");
@@ -31,6 +48,9 @@ fn main() {
         println!("cargo:rustc-link-arg=-lpthread");
         println!("cargo:rustc-link-arg=-lgcc");
         println!("cargo:rustc-link-arg=-Wl,--end-group");
+        for (short, long) in &pairs {
+            println!("cargo:rustc-link-arg=-Wl,--defsym={short}={long}");
+        }
         // MuPDF renames the HarfBuzz C API to fzhb_*. Point the viewer's
         // hb_* calls at that copy so we do not link a second HarfBuzz.
         for name in [
