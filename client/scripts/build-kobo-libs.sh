@@ -10,6 +10,37 @@ cd "$CLIENT_DIR"
 # #[link(name="harfbuzz")] still asks for this archive on some checkouts.
 # It only has to exist: build.rs redirects hb_* onto MuPDF's fzhb_* symbols.
 mkdir -p libs
+
+# MuPDF's fz_hb_malloc faults unless fz_hb_lock stored a context. The UI
+# shapes text without that lock, so provide libc allocators instead.
+HB_SRC=""
+for candidate in \
+    "$CLIENT_DIR/native/hb_alloc.c" \
+    "$CLIENT_DIR/ native/hb_alloc.c"
+do
+    if [ -f "$candidate" ]; then
+        HB_SRC=$candidate
+        break
+    fi
+done
+if [ -z "$HB_SRC" ]; then
+    echo "hb_alloc.c was not found under $CLIENT_DIR" >&2
+    exit 1
+fi
+command -v arm-linux-musleabihf-gcc >/dev/null
+command -v arm-linux-musleabihf-ar >/dev/null
+# A fixed member name so a rerun replaces the object instead of appending one.
+arm-linux-musleabihf-gcc -c -O2 -o libs/hb_alloc.o "$HB_SRC"
+rm -f libs/libhballoc.a
+arm-linux-musleabihf-ar rcs libs/libhballoc.a libs/hb_alloc.o
+rm -f libs/hb_alloc.o
+
+# Drop MuPDF's own copies. They allocate through a context the UI never sets,
+# and they collide with libhballoc.a if both stay in the link.
+if [ -f libs/libmupdf.a ] && arm-linux-musleabihf-ar t libs/libmupdf.a | grep -qx harfbuzz.o; then
+    arm-linux-musleabihf-ar d libs/libmupdf.a harfbuzz.o
+fi
+
 if [ ! -f libs/libharfbuzz.a ]; then
     command -v arm-linux-musleabihf-gcc >/dev/null
     command -v arm-linux-musleabihf-ar >/dev/null
@@ -97,6 +128,9 @@ fi
 
 mkdir -p libs
 cp "$ROOT/mupdf-1.27.0-source/build/release/libmupdf.a" libs/libmupdf.a
+if arm-linux-musleabihf-ar t libs/libmupdf.a | grep -qx harfbuzz.o; then
+    arm-linux-musleabihf-ar d libs/libmupdf.a harfbuzz.o
+fi
 cp "$ROOT/mupdf-1.27.0-source/build/release/libmupdf-third.a" libs/libmupdf-third.a
 cp "$ROOT/freetype/lib/libfreetype.a" libs/libfreetype.a
 arm-linux-musleabihf-ar d libs/libmupdf-third.a \

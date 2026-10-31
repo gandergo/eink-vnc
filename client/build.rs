@@ -4,7 +4,9 @@ fn main() {
     let target = env::var("TARGET").unwrap();
 
     // Cross-compiling for Kobo.
-    if target == "arm-unknown-linux-gnueabihf" {
+    // The Linux instructions build armv7-unknown-linux-gnueabihf.
+    // arm-unknown-linux-gnueabihf is the same soft-float-off ABI under the old triple.
+    if target == "arm-unknown-linux-gnueabihf" || target == "armv7-unknown-linux-gnueabihf" {
         println!("cargo:rustc-env=PKG_CONFIG_ALLOW_CROSS=1");
         println!("cargo:rustc-link-search=libs");
         println!("cargo:rustc-link-lib=dylib=stdc++");
@@ -36,6 +38,11 @@ fn main() {
         for (_, long) in &pairs {
             println!("cargo:rustc-link-arg=-Wl,--undefined={long}");
         }
+        // Define fz_hb_* before libmupdf.a. Otherwise MuPDF's copies run
+        // fz_malloc on a null context and the first label segfaults.
+        println!("cargo:rustc-link-arg=-Wl,--whole-archive");
+        println!("cargo:rustc-link-arg=-lhballoc");
+        println!("cargo:rustc-link-arg=-Wl,--no-whole-archive");
         println!("cargo:rustc-link-arg=-Wl,--start-group");
         println!("cargo:rustc-link-arg=-lmupdf_wrapper");
         println!("cargo:rustc-link-arg=-lmupdf");
