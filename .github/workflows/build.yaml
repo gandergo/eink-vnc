@@ -26,8 +26,12 @@ jobs:
         sudo tar -C /opt -xzf /tmp/arm-linux-musleabihf-cross.tgz
         echo /opt/arm-linux-musleabihf-cross/bin >> "$GITHUB_PATH"
 
+    # bash, not ./script: a checkout can store the script without the executable bit.
     - name: Build static FreeType
-      run: TOOL_PREFIX=arm-linux-musleabihf ./client/scripts/build-freetype.sh
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential
+        TOOL_PREFIX=arm-linux-musleabihf bash ./client/scripts/build-freetype.sh
 
     - name: Build
       working-directory: client

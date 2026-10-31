@@ -88,12 +88,12 @@ pub const MD_SIZE: Style = Style {
 
 // DejaVu Sans 2.37 (Bitstream Vera license, DejaVu changes in the public domain).
 // Embedded so the Kobo binary can draw the connection form without a fonts directory.
-// See client/fonts/LICENSE. Each face is opened separately so set_size on one
-// family does not change another.
-const SANS_REGULAR: &[u8] = include_bytes!("../../fonts/DejaVuSans.ttf");
-const SANS_ITALIC: &[u8] = include_bytes!("../../fonts/DejaVuSans-Oblique.ttf");
-const SANS_BOLD: &[u8] = include_bytes!("../../fonts/DejaVuSans-Bold.ttf");
-const SANS_BOLD_ITALIC: &[u8] = include_bytes!("../../fonts/DejaVuSans-BoldOblique.ttf");
+// The files sit next to this module. See LICENSE in this directory.
+// Each face is opened separately so set_size on one family does not change another.
+const SANS_REGULAR: &[u8] = include_bytes!("DejaVuSans.ttf");
+const SANS_ITALIC: &[u8] = include_bytes!("DejaVuSans-Oblique.ttf");
+const SANS_BOLD: &[u8] = include_bytes!("DejaVuSans-Bold.ttf");
+const SANS_BOLD_ITALIC: &[u8] = include_bytes!("DejaVuSans-BoldOblique.ttf");
 
 #[derive(Debug, Copy, Clone)]
 struct GlyphPlan {
