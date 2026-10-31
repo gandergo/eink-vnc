@@ -12,7 +12,6 @@
 pub mod common;
 pub mod filler;
 // pub mod image;
-pub mod icon;
 pub mod label;
 pub mod button;
 // pub mod rounded_button;

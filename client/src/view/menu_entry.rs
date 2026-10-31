@@ -3,7 +3,6 @@ use crate::device::CURRENT_DEVICE;
 use crate::framebuffer::{Framebuffer, UpdateMode};
 use crate::geom::{Rectangle, CornerSpec};
 use super::{View, Event, Hub, Bus, Id, ID_FEEDER, RenderQueue, RenderData, EntryKind};
-use super::icon::ICONS_PIXMAPS;
 use crate::input::{DeviceEvent, FingerStatus};
 use crate::gesture::GestureEvent;
 use crate::font::{Fonts, font_from_style, NORMAL_STYLE, SPECIAL_STYLE};
@@ -153,22 +152,16 @@ impl View for MenuEntry {
 
         font.render(fb, foreground, &plan, pt); 
 
-        let (icon_name, x_offset) = match self.kind {
-            EntryKind::CheckBox(_, _, value) if value => ("check_mark", 0),
-            EntryKind::RadioButton(_, _, value) if value => ("bullet", 0),
-            EntryKind::Message(_, Some(ref name)) => (name.as_str(), 0),
-            EntryKind::SubMenu(..) |
-            EntryKind::More(..) => ("angle-right-small",
-                                    self.rect.width() as i32 - padding / 2),
-            _ => ("", 0),
+        let mark = match self.kind {
+            EntryKind::CheckBox(_, _, true) => Some("x"),
+            EntryKind::RadioButton(_, _, true) => Some("*"),
+            EntryKind::SubMenu(..) | EntryKind::More(..) => Some(">"),
+            _ => None,
         };
-
-        if let Some(pixmap) = ICONS_PIXMAPS.get(icon_name) {
-            let dx = x_offset + (padding / 2 - pixmap.width as i32) / 2;
-            let dy = (self.rect.height() as i32 - pixmap.height as i32) / 2;
-            let pt = self.rect.min + pt!(dx, dy);
-
-            fb.draw_blended_pixmap(pixmap, pt, foreground);
+        if let Some(mark) = mark {
+            let mark_plan = font.plan(mark, None, None);
+            let dx = self.rect.width() as i32 - padding / 2 - mark_plan.width;
+            font.render(fb, foreground, &mark_plan, pt!(self.rect.min.x + dx, pt.y));
         }
     }
 

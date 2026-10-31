@@ -21,7 +21,6 @@ mod font;
 mod view;
 mod context;
 mod helpers;
-mod document;
 mod event_handling;
 mod scaling;
 

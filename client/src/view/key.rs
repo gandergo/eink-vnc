@@ -4,7 +4,6 @@ use crate::input::{DeviceEvent, FingerStatus};
 use crate::gesture::GestureEvent;
 use super::{View, Event, ViewId, KeyboardEvent, Hub, Bus, Id, ID_FEEDER, RenderQueue, RenderData, TextKind};
 use super::BORDER_RADIUS_LARGE;
-use super::icon::ICONS_PIXMAPS;
 use crate::color::{Color, TEXT_NORMAL, TEXT_INVERTED_HARD, KEYBOARD_BG};
 use crate::font::{Fonts, font_from_style, KBD_CHAR, KBD_LABEL};
 use crate::geom::{Rectangle, LinearDir, CornerSpec};
@@ -86,7 +85,6 @@ impl<'de> Deserialize<'de> for KeyKind {
 pub enum KeyLabel {
     Char(char),
     Text(&'static str),
-    Icon(&'static str),
 }
 
 impl KeyKind {
@@ -99,20 +97,20 @@ impl KeyKind {
             KeyKind::Output(ch) => KeyLabel::Char(ch),
             KeyKind::Delete(dir) => {
                 match dir {
-                    LinearDir::Forward => KeyLabel::Icon("delete-forward"),
-                    LinearDir::Backward => KeyLabel::Icon("delete-backward"),
+                    LinearDir::Forward => KeyLabel::Text("DEL"),
+                    LinearDir::Backward => KeyLabel::Text("BS"),
                 }
             },
             KeyKind::Move(dir) => {
                 match dir {
-                    LinearDir::Forward => KeyLabel::Icon(if ratio <= 1.0 { "move-forward-short" } else { "move-forward" }),
-                    LinearDir::Backward => KeyLabel::Icon(if ratio <= 1.0 { "move-backward-short" } else { "move-backward"}),
+                    LinearDir::Forward => KeyLabel::Text(">"),
+                    LinearDir::Backward => KeyLabel::Text("<"),
                 }
             },
-            KeyKind::Shift => if ratio < 2.0 { KeyLabel::Icon("shift") } else { KeyLabel::Text("SHIFT") },
-            KeyKind::Return => if ratio < 2.0 { KeyLabel::Icon("return") } else { KeyLabel::Text("RETURN") },
-            KeyKind::Combine => if ratio <= 1.0 { KeyLabel::Icon("combine") } else { KeyLabel::Text("CMB") },
-            KeyKind::Alternate => if ratio <= 1.0 { KeyLabel::Icon("alternate") } else { KeyLabel::Text("ALT") },
+            KeyKind::Shift => KeyLabel::Text(if ratio < 2.0 { "SH" } else { "SHIFT" }),
+            KeyKind::Return => KeyLabel::Text(if ratio < 2.0 { "OK" } else { "RETURN" }),
+            KeyKind::Combine => KeyLabel::Text("CMB"),
+            KeyKind::Alternate => KeyLabel::Text("ALT"),
         }
     }
 }
@@ -237,13 +235,6 @@ impl View for Key {
                 let pt = pt!(self.rect.min.x + dx, self.rect.max.y - dy);
                 font.render(fb, scheme[1], &plan, pt);
             },
-            KeyLabel::Icon(name) => {
-                let pixmap = ICONS_PIXMAPS.get(name).unwrap();
-                let dx = (self.rect.width() as i32 - pixmap.width as i32) / 2;
-                let dy = (self.rect.height() as i32 - pixmap.height as i32) / 2;
-                let pt = self.rect.min + pt!(dx, dy);
-                fb.draw_blended_pixmap(pixmap, pt, scheme[1]);
-            }
         }
     }
 
