@@ -447,6 +447,7 @@ pub enum ViewId {
     VNC,
     GuiPasswordField1,
     GuiInputField3,
+    GuiInputField4,
     OrientationMenu,
     Encoding,
     WaveformMenu,

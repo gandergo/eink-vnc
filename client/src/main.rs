@@ -96,6 +96,16 @@ pub struct PostProcBin {
     data: [u8; 256],
 }
 
+/// Milliseconds between e-ink snapshots while a finger is dragging.
+/// Zero and negative values paint only when the finger lifts.
+fn scroll_interval_from_fps(scroll_fps: f32) -> u64 {
+    if scroll_fps <= 0.0 {
+        u64::MAX / 4
+    } else {
+        (1000.0 / scroll_fps as f64).max(1.0) as u64
+    }
+}
+
 fn main() -> Result<(), Error> {
     env_logger::init();
 
@@ -276,7 +286,7 @@ fn main() -> Result<(), Error> {
     let mut partial_update = value_t!(matches.value_of("pu"), i8).unwrap_or(4);
     let mut refresh = value_t!(matches.value_of("fr"), u32).unwrap_or(500);
     let mut fps = value_t!(matches.value_of("fps"), f32).unwrap_or(30.0);
-    let scroll_fps = value_t!(matches.value_of("scroll_fps"), f32).unwrap_or(8.0);
+    let mut scroll_fps = value_t!(matches.value_of("scroll_fps"), f32).unwrap_or(8.0);
     let invert_red_shift = matches.is_present("irs");
 
     let blue_noise = matches.is_present("bn");
@@ -579,11 +589,8 @@ fn main() -> Result<(), Error> {
     let FRAME_MS: u64 = (1000.0 / (fps as f64)) as u64;
     // While a drag is in progress the panel shows a few fast snapshots and
     // drops the VNC frames in between. 0 means paint only when the finger lifts.
-    let scroll_interval_ms: u64 = if scroll_fps <= 0.0 {
-        u64::MAX / 4
-    } else {
-        (1000.0 / scroll_fps as f64).max(1.0) as u64
-    };
+    // The startup form can replace this before Start VNC.
+    let mut scroll_interval_ms = scroll_interval_from_fps(scroll_fps);
 
     //const max_dirty_refreshes: usize = 500;
     let max_dirty_refreshes: usize = refresh as usize;
@@ -778,7 +785,8 @@ fn main() -> Result<(), Error> {
             let mut view: Box<dyn View> = Box::new(Gui::new(context.fb.rect(), &tx, &mut rq,
                                                             &host.as_deref(), &port, &username, &password,
                                                             encoding, scale,
-                                                            &mut context, panning, disable_touch, long_tap));
+                                                            &mut context, panning, disable_touch, long_tap,
+                                                            scroll_fps));
             process_render_queue(view.as_ref(), &mut rq, &mut context, &mut updating);
 
             while let Ok(evt) = rx.recv() {
@@ -825,6 +833,14 @@ fn main() -> Result<(), Error> {
                             password = Option::from(text.clone());
                         }
                     },
+                    Event::Submit(ViewId::GuiInputField4, ref text) => {
+                        if let Ok(value) = text.trim().parse::<f32>() {
+                            if value.is_finite() && value >= 0.0 {
+                                scroll_fps = value;
+                                scroll_interval_ms = scroll_interval_from_fps(scroll_fps);
+                            }
+                        }
+                    },
                     Event::Select(EntryId::Portrait) => {
                         let n = CURRENT_DEVICE.startup_rotation();
                         if let Ok(dims) = context.fb.set_rotation(n) {
@@ -837,7 +853,8 @@ fn main() -> Result<(), Error> {
                         }
                         view = Box::new(Gui::new(context.fb.rect(), &tx, &mut rq,
                                                  &host.as_deref(), &port, &username, &password,
-                                                 encoding, scale, &mut context, panning, disable_touch, long_tap));
+                                                 encoding, scale, &mut context, panning, disable_touch, long_tap,
+                                                 scroll_fps));
                     },
                     Event::Select(EntryId::IPortrait) => {
                         let n = CURRENT_DEVICE.startup_rotation() - 2;
@@ -851,7 +868,8 @@ fn main() -> Result<(), Error> {
                         }
                         view = Box::new(Gui::new(context.fb.rect(), &tx, &mut rq,
                                                  &host.as_deref(), &port, &username, &password,
-                                                 encoding, scale,  &mut context, panning, disable_touch, long_tap));
+                                                 encoding, scale,  &mut context, panning, disable_touch, long_tap,
+                                                 scroll_fps));
                     },
                     Event::Select(EntryId::Landscape) => {
                         let n = CURRENT_DEVICE.startup_rotation() - 1;
@@ -865,7 +883,8 @@ fn main() -> Result<(), Error> {
                         }
                         view = Box::new(Gui::new(context.fb.rect(), &tx, &mut rq,
                                                  &host.as_deref(), &port, &username, &password,
-                                                 encoding, scale, &mut context, panning, disable_touch, long_tap));
+                                                 encoding, scale, &mut context, panning, disable_touch, long_tap,
+                                                 scroll_fps));
                     },
                     Event::Select(EntryId::ILandscape) => {
                         let n = CURRENT_DEVICE.startup_rotation() - 3;
@@ -879,7 +898,8 @@ fn main() -> Result<(), Error> {
                         }
                         view = Box::new(Gui::new(context.fb.rect(), &tx, &mut rq,
                                                  &host.as_deref(), &port, &username, &password,
-                                                 encoding, scale, &mut context, panning, disable_touch, long_tap));
+                                                 encoding, scale, &mut context, panning, disable_touch, long_tap,
+                                                 scroll_fps));
                     },
                     Event::Toggle(ViewId::Encoding) => {
                         // println!("{}", encoding);

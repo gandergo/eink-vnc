@@ -1,5 +1,5 @@
 use alloc::boxed::Box;
-use alloc::string::ToString;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::option::Option;
 use core::option::Option::{None, Some};
@@ -27,6 +27,16 @@ use crate::view::output_field::OutputField;
 use crate::view::password_field::Password_Field;
 use crate::view::toggle_button::Toggle_Button;
 
+/// Whole numbers show as `8`, not `8.0`, so the startup box matches the CLI default.
+fn format_scroll_fps(fps: f32) -> String {
+    if fps.is_finite() && fps.fract() == 0.0 && fps.abs() < 1_000_000.0 {
+        format!("{}", fps as i32)
+    } else {
+        let text = format!("{:.2}", fps);
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
 pub struct Gui {
     id: Id,
     rect: Rectangle,
@@ -41,7 +51,8 @@ impl Gui {
     pub fn new(rect: Rectangle, hub: &Hub, rq: &mut RenderQueue,
                host: &Option<&str>, port:&u16, username:&Option<String>, password:&Option<String>,
                encoding_enabled:bool, scaling_enabled:bool,
-               context: &mut Context, panning:bool, disable_touch:bool, long_tap:bool) -> Gui  {
+               context: &mut Context, panning:bool, disable_touch:bool, long_tap:bool,
+               scroll_fps: f32) -> Gui  {
         let id = ID_FEEDER.next();
         // let mut children: Vec<Box<dyn View>> = Vec::new();
         let mut children = Vec::new();
@@ -315,6 +326,29 @@ impl Gui {
 
         row_height = row_height + small_height + small_thickness;
 
+        children.push(Box::new(Label::new(
+            rect![
+                rect.min.x,
+                row_height,
+                rect.max.x / 2,
+                row_height + small_height - small_thickness],
+            "Scroll FPS".to_string(),
+            Align::Center,
+        )) as Box<dyn View>);
+        children.push(Box::new(
+            InputField::new(
+                rect![
+                    rect.max.x / 2,
+                    row_height,
+                    rect.max.x,
+                    row_height + small_height - small_thickness],
+                ViewId::GuiInputField4,
+            )
+                .border(true)
+                .placeholder("8")
+                .text(&format_scroll_fps(scroll_fps), context),
+        ) as Box<dyn View>);
+
         let filled_rect = rect![
                 rect.min.x, //0
                 rect.min.y + small_height + small_thickness + small_height + small_thickness, //just below the input fields
@@ -536,6 +570,12 @@ impl View for Gui {
                 if !text.is_empty() {
                     // self.toggle_keyboard(false, None, hub, rq, context);
                     hub.send(Event::Submit(ViewId::GuiPasswordField1, text.clone())).ok();
+                }
+                true
+            },
+            Event::Submit(ViewId::GuiInputField4, ref text) => {
+                if !text.is_empty() {
+                    hub.send(Event::Submit(ViewId::GuiInputField4, text.clone())).ok();
                 }
                 true
             },
