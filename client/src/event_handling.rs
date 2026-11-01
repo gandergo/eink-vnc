@@ -14,6 +14,8 @@ pub struct event_params {
     pub exit_to_gui:bool,
     pub x_offset:u32,
     pub y_offset:u32,
+    /// A drag ended in this batch. The panel should show the latest frame now.
+    pub drag_ended: bool,
 }
 
 impl event_params {
@@ -22,8 +24,12 @@ impl event_params {
                          vnc: &mut Option<Client>, mut finger_down_count: Instant, finger_seconds: Duration, fb: &mut Box<dyn Framebuffer>,
                          panning: bool, mut has_drawn_once: bool, scale: bool, long_tap: bool, gui_enabled:bool, disable_touch:bool,
                          disable_exit_via_hold:bool, exit_duration:u32,
+                         finger_down: &mut bool, dragging: &mut bool,
                          ) -> event_params {
-        if let Ok(evt) = rx.try_recv() {
+        // Drain every touch sample waiting in the queue. One sample per
+        // framebuffer refresh is what makes a drag crawl frame by frame.
+        let mut drag_ended = false;
+        while let Ok(evt) = rx.try_recv() {
             match evt {
                 Event::Device(de) => {
                     match de {
@@ -36,6 +42,11 @@ impl event_params {
                             // not a recycled slot index. Any non-negative id is a real contact.
                                     match status {
                                         FingerStatus::Up => {
+                                            if *dragging {
+                                                drag_ended = true;
+                                            }
+                                            *finger_down = false;
+                                            *dragging = false;
                                             //we only want send right click once we release long_tap
                                             if scale && !disable_touch {
                                                 if long_tap {
@@ -169,6 +180,7 @@ impl event_params {
                                                         exit_to_gui: if gui_enabled {true} else {false},
                                                         x_offset,
                                                         y_offset,
+                                                        drag_ended,
                                                     }
                                                 } else {
                                                     return event_params {
@@ -178,11 +190,16 @@ impl event_params {
                                                         exit_to_gui: if gui_enabled {true} else {false},
                                                         x_offset,
                                                         y_offset,
+                                                        drag_ended,
                                                     }
                                                 }
                                             };
                                         }
                                         FingerStatus::Down => {
+                                            if !disable_touch && !panning {
+                                                *finger_down = true;
+                                                *dragging = false;
+                                            }
                                             if scale && !disable_touch {
                                                 if panning {
                                                     finger_down_count = Instant::now();
@@ -227,6 +244,9 @@ impl event_params {
                                             finger_down_count = Instant::now();
                                         }
                                         FingerStatus::Motion => {
+                                            if *finger_down && !disable_touch && !panning {
+                                                *dragging = true;
+                                            }
                                             if scale && !disable_touch {
                                                 if panning {
 
@@ -282,6 +302,7 @@ impl event_params {
                                 exit_to_gui: if gui_enabled {true} else {false},
                                 x_offset,
                                 y_offset,
+                                drag_ended,
                             }
                         }
                         DeviceEvent::CoverOn => {
@@ -293,6 +314,7 @@ impl event_params {
                                 exit_to_gui: if gui_enabled {true} else {false},
                                 x_offset,
                                 y_offset,
+                                drag_ended,
                             }
                         }
                         // DeviceEvent::Button { code: ButtonCode::Light, status: ButtonStatus::Pressed, .. } => {
@@ -387,6 +409,7 @@ impl event_params {
             exit_to_gui: false,
             x_offset,
             y_offset,
+            drag_ended,
         }
     }
 }

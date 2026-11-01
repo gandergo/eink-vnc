@@ -201,6 +201,12 @@ fn main() -> Result<(), Error> {
                 .takes_value(true),
         )
         .arg(
+            Arg::new("scroll_fps")
+                .help("While a finger is dragging, paint this many e-ink frames per second and skip the ones in between. 0 paints only when the finger lifts")
+                .long("scroll-fps")
+                .takes_value(true),
+        )
+        .arg(
             Arg::new("bn")
                 .help("Blue noise dithering for 1bit output")
                 .long("blue_noise")
@@ -270,6 +276,7 @@ fn main() -> Result<(), Error> {
     let mut partial_update = value_t!(matches.value_of("pu"), i8).unwrap_or(4);
     let mut refresh = value_t!(matches.value_of("fr"), u32).unwrap_or(500);
     let mut fps = value_t!(matches.value_of("fps"), f32).unwrap_or(30.0);
+    let scroll_fps = value_t!(matches.value_of("scroll_fps"), f32).unwrap_or(8.0);
     let invert_red_shift = matches.is_present("irs");
 
     let blue_noise = matches.is_present("bn");
@@ -570,6 +577,13 @@ fn main() -> Result<(), Error> {
 
     //const FRAME_MS: u64 = 1000 / 30;
     let FRAME_MS: u64 = (1000.0 / (fps as f64)) as u64;
+    // While a drag is in progress the panel shows a few fast snapshots and
+    // drops the VNC frames in between. 0 means paint only when the finger lifts.
+    let scroll_interval_ms: u64 = if scroll_fps <= 0.0 {
+        u64::MAX / 4
+    } else {
+        (1000.0 / scroll_fps as f64).max(1.0) as u64
+    };
 
     //const max_dirty_refreshes: usize = 500;
     let max_dirty_refreshes: usize = refresh as usize;
@@ -737,6 +751,9 @@ fn main() -> Result<(), Error> {
 
     let mut finger_down_count = Instant::now();
     let finger_seconds = Duration::from_secs(2);
+    let mut finger_down = false;
+    let mut dragging = false;
+    let mut last_scroll_paint = Instant::now();
 
     'running: loop {
         let time_at_sol = Instant::now();
@@ -1062,7 +1079,7 @@ fn main() -> Result<(), Error> {
                                                                        fb.width(), fb.height(), x_padding, y_padding, x_offset, y_offset,
                                                                        &mut vnc, finger_down_count, finger_seconds, &mut fb,
                                                                        panning, has_drawn_once, scale, long_tap, gui_enabled, disable_touch,
-                                                                       disable_exit_via_hold, exit_duration);
+                                                                       disable_exit_via_hold, exit_duration, &mut finger_down, &mut dragging);
         has_drawn_once = event_params.has_drawn_once;
         finger_down_count =  event_params.finger_down_count;
         if event_params.exit_to_nickel {
@@ -1892,7 +1909,19 @@ fn main() -> Result<(), Error> {
         }
         //only at end of frame request a new update
 
-        if (time_at_last_draw.elapsed().as_millis() as u64) < FRAME_MS {
+        let scrolling = dragging && !event_params.drag_ended;
+        let since_paint = time_at_last_draw.elapsed().as_millis() as u64;
+        let scroll_snapshot_due =
+            last_scroll_paint.elapsed().as_millis() as u64 >= scroll_interval_ms;
+        // A drag used to wait out a full panel refresh before the next pointer
+        // sample. Keep writing pixels, and submit an e-ink update only on the
+        // scroll cadence. The frame when the finger lifts uses the normal waveform.
+        if scrolling && !scroll_snapshot_due {
+            thread::sleep(Duration::from_millis(2));
+        } else if scrolling && dirty_rects.is_empty() {
+            last_scroll_paint = Instant::now();
+            thread::sleep(Duration::from_millis(2));
+        } else if !scrolling && !event_params.drag_ended && since_paint < FRAME_MS {
             let elapsed_ms = time_at_sol.elapsed().as_millis();
             debug!(
                     "Sleep for {} milliseconds, target {}, {} MS elsaped since loop",
@@ -1902,9 +1931,9 @@ fn main() -> Result<(), Error> {
                 FRAME_MS - time_at_last_draw.elapsed().as_millis() as u64,
                 //time at sol is when running loop started for that pass
             ));
-        } else if time_at_last_draw.elapsed().as_millis() as u64 >= FRAME_MS {
+        } else {
             let elapsed_ms = time_at_sol.elapsed().as_millis();
-            if dirty_update_count > max_dirty_refreshes {
+            if !scrolling && dirty_update_count > max_dirty_refreshes {
 
                 let mut min_x = fb.width() as i32;
                 let mut min_y = fb.height() as i32;
@@ -1958,8 +1987,19 @@ fn main() -> Result<(), Error> {
 
                 }
                 let mut union = rect![min_x,min_y,max_x,max_y];
-                fb.update(&union, partial_update_mode, /*UpdateMode::Partial GC16*/).ok();
-                dirty_update_count += 1;
+                // Intermediate drag frames use the fast waveform so they do not
+                // queue a slow partial update for every skipped VNC frame.
+                let paint_mode = if scrolling {
+                    UpdateMode::Fast
+                } else {
+                    partial_update_mode
+                };
+                fb.update(&union, paint_mode, /*UpdateMode::Partial GC16*/).ok();
+                if scrolling {
+                    last_scroll_paint = Instant::now();
+                } else {
+                    dirty_update_count += 1;
+                }
 
                 debug!(
                     "Partial update, since last {}, target {}, u_rect {}, late by {}, {} since loop, {} DRs",
