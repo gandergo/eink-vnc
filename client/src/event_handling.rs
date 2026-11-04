@@ -290,6 +290,26 @@ impl event_params {
                                     }
                         }
                         DeviceEvent::Button {
+                            code: ButtonCode::Backward,
+                            status,
+                            ..
+                        } => {
+                            // Upper page button in portrait (Linux key 193).
+                            if let Some(key) = page_keysym(ButtonCode::Backward) {
+                                send_page_key(vnc, status, key);
+                            }
+                        }
+                        DeviceEvent::Button {
+                            code: ButtonCode::Forward,
+                            status,
+                            ..
+                        } => {
+                            // Lower page button in portrait (Linux key 194).
+                            if let Some(key) = page_keysym(ButtonCode::Forward) {
+                                send_page_key(vnc, status, key);
+                            }
+                        }
+                        DeviceEvent::Button {
                             code: ButtonCode::Power,
                             status: ButtonStatus::Pressed,
                             ..
@@ -411,5 +431,48 @@ impl event_params {
             y_offset,
             drag_ended,
         }
+    }
+}
+
+/// X11 keysyms. An RFB KeyEvent carries these, not a Linux keycode.
+const XK_PAGE_UP: u32 = 0xff55;
+const XK_PAGE_DOWN: u32 = 0xff56;
+
+fn page_keysym(code: ButtonCode) -> Option<u32> {
+    match code {
+        ButtonCode::Backward => Some(XK_PAGE_UP),
+        ButtonCode::Forward => Some(XK_PAGE_DOWN),
+        _ => None,
+    }
+}
+
+/// One physical click is a full key tap. A hold repeats at the kernel's rate,
+/// which still turns a page on servers that do not repeat a held key themselves.
+fn send_page_key(vnc: &mut Option<Client>, status: ButtonStatus, key: u32) {
+    if status == ButtonStatus::Released {
+        return;
+    }
+    let Some(client) = vnc.as_mut() else {
+        return;
+    };
+    if client
+        .send_key_event(true, key)
+        .and_then(|_| client.send_key_event(false, key))
+        .is_err()
+    {
+        error!("server disconnected");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn portrait_page_buttons_are_page_up_and_page_down() {
+        assert_eq!(page_keysym(ButtonCode::Backward), Some(0xff55));
+        assert_eq!(page_keysym(ButtonCode::Forward), Some(0xff56));
+        assert_eq!(page_keysym(ButtonCode::Power), None);
+        assert_eq!(page_keysym(ButtonCode::Home), None);
     }
 }
