@@ -1947,7 +1947,7 @@ fn main() -> Result<(), Error> {
         // A drag used to wait out a full panel refresh before the next pointer
         // sample. Keep writing pixels, and submit an e-ink update only on the
         // scroll cadence. The frame when the finger lifts uses the normal waveform.
-        // A page-button stroke is the same idea taken further: hold the panel
+        // A page-button wheel burst is the same idea taken further: hold the panel
         // until the remote has moved, then refresh once.
         if page_scrolling {
             thread::sleep(Duration::from_millis(2));
