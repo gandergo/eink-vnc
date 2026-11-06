@@ -761,6 +761,8 @@ fn main() -> Result<(), Error> {
     let mut finger_down = false;
     let mut dragging = false;
     let mut last_scroll_paint = Instant::now();
+    let mut page_scroll_until = Instant::now();
+    let mut page_scroll_open = false;
 
     'running: loop {
         let time_at_sol = Instant::now();
@@ -1102,6 +1104,10 @@ fn main() -> Result<(), Error> {
                                                                        disable_exit_via_hold, exit_duration, &mut finger_down, &mut dragging);
         has_drawn_once = event_params.has_drawn_once;
         finger_down_count =  event_params.finger_down_count;
+        if let Some(until) = event_params.page_scroll_until {
+            page_scroll_until = until;
+            page_scroll_open = true;
+        }
         if event_params.exit_to_nickel {
             fb.set_rotation(CURRENT_DEVICE.startup_rotation()).ok();
             break 'running
@@ -1929,6 +1935,11 @@ fn main() -> Result<(), Error> {
         }
         //only at end of frame request a new update
 
+        let page_scrolling = page_scroll_open && Instant::now() < page_scroll_until;
+        let page_just_ended = page_scroll_open && !page_scrolling;
+        if page_just_ended {
+            page_scroll_open = false;
+        }
         let scrolling = dragging && !event_params.drag_ended;
         let since_paint = time_at_last_draw.elapsed().as_millis() as u64;
         let scroll_snapshot_due =
@@ -1936,7 +1947,16 @@ fn main() -> Result<(), Error> {
         // A drag used to wait out a full panel refresh before the next pointer
         // sample. Keep writing pixels, and submit an e-ink update only on the
         // scroll cadence. The frame when the finger lifts uses the normal waveform.
-        if scrolling && !scroll_snapshot_due {
+        // A page-button stroke is the same idea taken further: hold the panel
+        // until the remote has moved, then refresh once.
+        if page_scrolling {
+            thread::sleep(Duration::from_millis(2));
+        } else if page_just_ended {
+            fb.update(&device_fb_rect, partial_update_mode).ok();
+            dirty_rects.clear();
+            dirty_update_count += 1;
+            time_at_last_draw = Instant::now();
+        } else if scrolling && !scroll_snapshot_due {
             thread::sleep(Duration::from_millis(2));
         } else if scrolling && dirty_rects.is_empty() {
             last_scroll_paint = Instant::now();

@@ -1,4 +1,5 @@
 use std::sync::mpsc::{self, Sender, Receiver};
+use std::thread;
 use std::time::{Duration, Instant};
 use crate::device::CURRENT_DEVICE;
 use crate::framebuffer::Framebuffer;
@@ -16,6 +17,8 @@ pub struct event_params {
     pub y_offset:u32,
     /// A drag ended in this batch. The panel should show the latest frame now.
     pub drag_ended: bool,
+    /// Keep skipping e-ink frames until this instant, then paint the settled page.
+    pub page_scroll_until: Option<Instant>,
 }
 
 impl event_params {
@@ -29,6 +32,10 @@ impl event_params {
         // Drain every touch sample waiting in the queue. One sample per
         // framebuffer refresh is what makes a drag crawl frame by frame.
         let mut drag_ended = false;
+        let mut page_scroll_until = None;
+        // One page per pass. Kernel auto-repeat during the gesture is dropped
+        // so a held button does not queue a stack of extra pages.
+        let mut paged_this_batch = false;
         while let Ok(evt) = rx.try_recv() {
             match evt {
                 Event::Device(de) => {
@@ -181,6 +188,7 @@ impl event_params {
                                                         x_offset,
                                                         y_offset,
                                                         drag_ended,
+                                                        page_scroll_until,
                                                     }
                                                 } else {
                                                     return event_params {
@@ -191,6 +199,7 @@ impl event_params {
                                                         x_offset,
                                                         y_offset,
                                                         drag_ended,
+                                                        page_scroll_until,
                                                     }
                                                 }
                                             };
@@ -289,24 +298,28 @@ impl event_params {
                                         }
                                     }
                         }
-                        DeviceEvent::Button {
-                            code: ButtonCode::Backward,
-                            status,
-                            ..
-                        } => {
-                            // Upper page button in portrait (Linux key 193).
-                            if let Some(key) = page_keysym(ButtonCode::Backward) {
-                                send_page_key(vnc, status, key);
-                            }
-                        }
-                        DeviceEvent::Button {
-                            code: ButtonCode::Forward,
-                            status,
-                            ..
-                        } => {
-                            // Lower page button in portrait (Linux key 194).
-                            if let Some(key) = page_keysym(ButtonCode::Forward) {
-                                send_page_key(vnc, status, key);
+                        DeviceEvent::Button { code, status, .. }
+                            if code == ButtonCode::Backward || code == ButtonCode::Forward =>
+                        {
+                            // Upper button scrolls the remote up, lower button scrolls it down.
+                            // A touch stroke, because most Android apps ignore Page Up and Page Down.
+                            if !paged_this_batch
+                                && status != ButtonStatus::Released
+                                && !*finger_down
+                            {
+                                send_page_scroll(
+                                    vnc,
+                                    code == ButtonCode::Backward,
+                                    scale,
+                                    width,
+                                    height,
+                                    fb_width,
+                                    fb_height,
+                                    x_offset,
+                                    y_offset,
+                                );
+                                page_scroll_until = Some(Instant::now() + PAGE_SCROLL_SETTLE);
+                                paged_this_batch = true;
                             }
                         }
                         DeviceEvent::Button {
@@ -323,6 +336,7 @@ impl event_params {
                                 x_offset,
                                 y_offset,
                                 drag_ended,
+                                page_scroll_until,
                             }
                         }
                         DeviceEvent::CoverOn => {
@@ -335,6 +349,7 @@ impl event_params {
                                 x_offset,
                                 y_offset,
                                 drag_ended,
+                                page_scroll_until,
                             }
                         }
                         // DeviceEvent::Button { code: ButtonCode::Light, status: ButtonStatus::Pressed, .. } => {
@@ -430,36 +445,126 @@ impl event_params {
             x_offset,
             y_offset,
             drag_ended,
+            page_scroll_until,
         }
     }
 }
 
-/// X11 keysyms. An RFB KeyEvent carries these, not a Linux keycode.
-const XK_PAGE_UP: u32 = 0xff55;
-const XK_PAGE_DOWN: u32 = 0xff56;
+/// Four fifths of the visible page, so one press lands about where Page Down would.
+const PAGE_SCROLL_NUM: u32 = 4;
+const PAGE_SCROLL_DEN: u32 = 5;
+const PAGE_SCROLL_STEPS: u16 = 8;
+const PAGE_SCROLL_DWELLS: u16 = 4;
+const STEP_MS: u64 = 12;
+const DWELL_MS: u64 = 20;
+/// After the finger lifts, intermediate remote frames stay on the fast waveform.
+const PAGE_SCROLL_SETTLE: Duration = Duration::from_millis(280);
 
-fn page_keysym(code: ButtonCode) -> Option<u32> {
-    match code {
-        ButtonCode::Backward => Some(XK_PAGE_UP),
-        ButtonCode::Forward => Some(XK_PAGE_DOWN),
-        _ => None,
-    }
+struct PageStroke {
+    x: u16,
+    start_y: u16,
+    end_y: u16,
 }
 
-/// One physical click is a full key tap. A hold repeats at the kernel's rate,
-/// which still turns a page on servers that do not repeat a held key themselves.
-fn send_page_key(vnc: &mut Option<Client>, status: ButtonStatus, key: u32) {
-    if status == ButtonStatus::Released {
-        return;
+fn visible_remote(
+    scale: bool,
+    width: u16,
+    height: u16,
+    fb_width: u32,
+    fb_height: u32,
+    x_offset: u32,
+    y_offset: u32,
+) -> (u16, u16, u16, u16) {
+    if width == 0 || height == 0 {
+        return (0, 0, 0, 0);
     }
+    if scale {
+        return (0, 0, width, height);
+    }
+    let vis_w = (width as u32).min(fb_width) as u16;
+    let vis_h = (height as u32).min(fb_height) as u16;
+    let left = x_offset.min(width.saturating_sub(vis_w) as u32) as u16;
+    let top = y_offset.min(height.saturating_sub(vis_h) as u32) as u16;
+    (left, top, vis_w, vis_h)
+}
+
+/// `scroll_up` moves the finger down, which pulls earlier content into view.
+fn page_stroke(scroll_up: bool, left: u16, top: u16, vis_w: u16, vis_h: u16) -> Option<PageStroke> {
+    if vis_w < 8 || vis_h < 40 {
+        return None;
+    }
+    let travel = (vis_h as u32) * PAGE_SCROLL_NUM / PAGE_SCROLL_DEN;
+    if travel < 8 {
+        return None;
+    }
+    let margin = (vis_h as u32 - travel) / 2;
+    let x = left as u32 + vis_w as u32 / 2;
+    let y_top = top as u32 + margin;
+    let y_bot = y_top + travel;
+    let (start_y, end_y) = if scroll_up {
+        (y_top, y_bot)
+    } else {
+        (y_bot, y_top)
+    };
+    Some(PageStroke {
+        x: x as u16,
+        start_y: start_y as u16,
+        end_y: end_y as u16,
+    })
+}
+
+fn lerp_u16(start: u16, end: u16, step: u16, steps: u16) -> u16 {
+    let start = start as i32;
+    let end = end as i32;
+    (start + (end - start) * step as i32 / steps as i32) as u16
+}
+
+/// Drag across most of the visible page, then dwell so the remote does not fling past it.
+fn send_page_scroll(
+    vnc: &mut Option<Client>,
+    scroll_up: bool,
+    scale: bool,
+    width: u16,
+    height: u16,
+    fb_width: u32,
+    fb_height: u32,
+    x_offset: u32,
+    y_offset: u32,
+) {
+    let (left, top, vis_w, vis_h) =
+        visible_remote(scale, width, height, fb_width, fb_height, x_offset, y_offset);
+    let Some(stroke) = page_stroke(scroll_up, left, top, vis_w, vis_h) else {
+        return;
+    };
     let Some(client) = vnc.as_mut() else {
         return;
     };
-    if client
-        .send_key_event(true, key)
-        .and_then(|_| client.send_key_event(false, key))
-        .is_err()
-    {
+    let mut pointer = |down: bool, y: u16| -> bool {
+        client
+            .send_pointer_event(if down { 1 } else { 0 }, stroke.x, y)
+            .is_ok()
+    };
+    if !pointer(false, stroke.start_y) || !pointer(true, stroke.start_y) {
+        error!("server disconnected");
+        return;
+    }
+    for step in 1..=PAGE_SCROLL_STEPS {
+        thread::sleep(Duration::from_millis(STEP_MS));
+        let y = lerp_u16(stroke.start_y, stroke.end_y, step, PAGE_SCROLL_STEPS);
+        if !pointer(true, y) {
+            error!("server disconnected");
+            return;
+        }
+    }
+    for _ in 0..PAGE_SCROLL_DWELLS {
+        thread::sleep(Duration::from_millis(DWELL_MS));
+        if !pointer(true, stroke.end_y) {
+            error!("server disconnected");
+            return;
+        }
+    }
+    thread::sleep(Duration::from_millis(DWELL_MS));
+    if !pointer(false, stroke.end_y) {
         error!("server disconnected");
     }
 }
@@ -469,10 +574,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn portrait_page_buttons_are_page_up_and_page_down() {
-        assert_eq!(page_keysym(ButtonCode::Backward), Some(0xff55));
-        assert_eq!(page_keysym(ButtonCode::Forward), Some(0xff56));
-        assert_eq!(page_keysym(ButtonCode::Power), None);
-        assert_eq!(page_keysym(ButtonCode::Home), None);
+    fn page_stroke_travels_four_fifths_of_the_visible_page() {
+        let stroke = page_stroke(true, 0, 0, 1000, 2000).unwrap();
+        assert_eq!(stroke.x, 500);
+        assert!(stroke.start_y < stroke.end_y);
+        assert_eq!(stroke.end_y - stroke.start_y, 1600);
+
+        let down = page_stroke(false, 0, 0, 1000, 2000).unwrap();
+        assert!(down.start_y > down.end_y);
+        assert_eq!(down.start_y - down.end_y, 1600);
+
+        let inset = page_stroke(true, 10, 40, 200, 500).unwrap();
+        assert_eq!(inset.x, 110);
+        assert_eq!(inset.end_y - inset.start_y, 400);
+        assert!(inset.start_y >= 40);
+
+        assert!(page_stroke(true, 0, 0, 1000, 20).is_none());
+    }
+
+    #[test]
+    fn scaled_session_scrolls_the_whole_remote() {
+        assert_eq!(visible_remote(true, 1080, 2400, 1264, 1680, 100, 200), (0, 0, 1080, 2400));
+        assert_eq!(visible_remote(false, 1080, 2400, 1000, 800, 50, 90), (50, 90, 1000, 800));
     }
 }
