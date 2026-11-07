@@ -451,8 +451,8 @@ impl event_params {
 /// RFB pointer bits 3 and 4 are wheel up and wheel down.
 const POINTER_WHEEL_UP: u8 = 1 << 3;
 const POINTER_WHEEL_DOWN: u8 = 1 << 4;
-/// Four fifths of the visible page, then two thirds of that, then three
-/// quarters of that. One notch moves the phone farther than 160px.
+/// Four fifths of the visible page, then two thirds, then three quarters,
+/// then one quarter of that. One notch moves the phone farther than 160px.
 const PAGE_SCROLL_NUM: u32 = 4;
 const PAGE_SCROLL_DEN: u32 = 5;
 /// Android turns one wheel notch into about 64dp. A phone near 2.5x is ~160px.
@@ -490,9 +490,10 @@ fn visible_remote(
 fn page_wheel_notches(vis_h: u16) -> u32 {
     let travel = (vis_h as u32) * PAGE_SCROLL_NUM / PAGE_SCROLL_DEN;
     let notches = travel / WHEEL_PX_PER_NOTCH;
-    // Two thirds of the four-fifths page, then three quarters of that count.
+    // Two thirds, then three quarters, then one quarter of that count.
     let shortened = (notches * 2 + 1) / 3;
-    ((shortened * 3 + 2) / 4).max(1)
+    let three_quarters = (shortened * 3 + 2) / 4;
+    ((three_quarters + 2) / 4).max(1)
 }
 
 /// `scroll_up` is wheel up (RFB button 4). The click is aimed at the middle of the page.
@@ -544,20 +545,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn page_wheel_is_three_quarters_of_the_shortened_page() {
+    fn page_wheel_is_one_quarter_of_the_previous_burst() {
+        // 2000px was 5 clicks. One quarter of that, rounded, is 1.
         let up = page_wheel(true, 0, 0, 1000, 2000).unwrap();
         assert_eq!(up.x, 500);
         assert_eq!(up.y, 1000);
-        assert_eq!(up.notches, 5);
+        assert_eq!(up.notches, 1);
         assert_eq!(up.button, POINTER_WHEEL_UP);
 
         let down = page_wheel(false, 0, 0, 1000, 2000).unwrap();
         assert_eq!(down.button, POINTER_WHEEL_DOWN);
-        assert_eq!(down.notches, 5);
+        assert_eq!(down.notches, 1);
 
-        // 1400px used to be 5 clicks. Three quarters of that, rounded, is 4.
+        // 1400px was 4 clicks. One quarter of that is 1.
         let mid = page_wheel(true, 0, 0, 800, 1400).unwrap();
-        assert_eq!(mid.notches, 4);
+        assert_eq!(mid.notches, 1);
+
+        // 3000px was 8 clicks. One quarter of that is 2.
+        let tall = page_wheel(true, 0, 0, 1000, 3000).unwrap();
+        assert_eq!(tall.notches, 2);
 
         let short = page_wheel(true, 10, 40, 200, 100).unwrap();
         assert_eq!(short.x, 110);
