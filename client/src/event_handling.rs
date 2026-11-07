@@ -455,7 +455,7 @@ const POINTER_WHEEL_DOWN: u8 = 1 << 4;
 /// One Kobo button press is one wheel notch. A notch has no smaller step.
 const PAGE_SCROLL_CLICKS: u32 = 1;
 /// Let the notch animation start. A press before that is an ordinary click.
-const STOP_GAP_MS: u64 = 150;
+const STOP_GAP_MS: u64 = 300;
 const STOP_MOVE_MS: u64 = 16;
 /// Hold still after the nudge so the stop itself does not fling.
 const STOP_HOLD_MS: u64 = 40;
