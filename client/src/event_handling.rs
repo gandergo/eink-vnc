@@ -301,7 +301,7 @@ impl event_params {
                         DeviceEvent::Button { code, status, .. }
                             if code == ButtonCode::Backward || code == ButtonCode::Forward =>
                         {
-                            // Upper button wheels up, lower button wheels down, then a tap stops the animation.
+                            // Upper button wheels up, lower button wheels down, then a drag stops the animation.
                             if !paged_this_batch
                                 && status != ButtonStatus::Released
                                 && !*finger_down
@@ -454,9 +454,13 @@ const POINTER_WHEEL_UP: u8 = 1 << 3;
 const POINTER_WHEEL_DOWN: u8 = 1 << 4;
 /// One Kobo button press is one wheel notch. A notch has no smaller step.
 const PAGE_SCROLL_CLICKS: u32 = 1;
-/// Wait for Android to start the notch animation, then tap to abort it.
-const STOP_GAP_MS: u64 = 40;
-const STOP_TAP_MS: u64 = 30;
+/// Let the notch animation start. A press before that is an ordinary click.
+const STOP_GAP_MS: u64 = 150;
+const STOP_MOVE_MS: u64 = 16;
+/// Hold still after the nudge so the stop itself does not fling.
+const STOP_HOLD_MS: u64 = 40;
+/// Farther than Android's touch slop, so the stop is a drag and not a click.
+const STOP_NUDGE_PX: u32 = 48;
 
 struct PageWheel {
     x: u16,
@@ -500,7 +504,25 @@ fn page_wheel(scroll_up: bool, left: u16, top: u16, vis_w: u16, vis_h: u16) -> O
     })
 }
 
-/// One notch at the middle of the page, then a short tap that stops the animation.
+/// Shift sideways past the tap threshold. A press and release on one spot is a click.
+fn stop_x(x: u16, left: u16, vis_w: u16) -> u16 {
+    let right = left as u32 + vis_w.saturating_sub(1) as u32;
+    let room_right = right.saturating_sub(x as u32);
+    let room_left = (x as u32).saturating_sub(left as u32);
+    if room_right >= STOP_NUDGE_PX {
+        (x as u32 + STOP_NUDGE_PX) as u16
+    } else if room_left >= STOP_NUDGE_PX {
+        (x as u32 - STOP_NUDGE_PX) as u16
+    } else if room_right >= room_left && room_right > 0 {
+        right as u16
+    } else if room_left > 0 {
+        left
+    } else {
+        x
+    }
+}
+
+/// One notch at the middle of the page, then a sideways drag that stops the animation.
 fn send_page_scroll(
     vnc: &mut Option<Client>,
     scroll_up: bool,
@@ -529,12 +551,23 @@ fn send_page_scroll(
         }
     }
     thread::sleep(Duration::from_millis(STOP_GAP_MS));
+    let end_x = stop_x(wheel.x, left, vis_w);
     if client.send_pointer_event(1, wheel.x, wheel.y).is_err() {
         error!("server disconnected");
         return;
     }
-    thread::sleep(Duration::from_millis(STOP_TAP_MS));
-    if client.send_pointer_event(0, wheel.x, wheel.y).is_err() {
+    thread::sleep(Duration::from_millis(STOP_MOVE_MS));
+    if client.send_pointer_event(1, end_x, wheel.y).is_err() {
+        error!("server disconnected");
+        return;
+    }
+    thread::sleep(Duration::from_millis(STOP_HOLD_MS));
+    if client.send_pointer_event(1, end_x, wheel.y).is_err() {
+        error!("server disconnected");
+        return;
+    }
+    thread::sleep(Duration::from_millis(STOP_HOLD_MS));
+    if client.send_pointer_event(0, end_x, wheel.y).is_err() {
         error!("server disconnected");
     }
 }
@@ -556,6 +589,12 @@ mod tests {
         assert_eq!(down.notches, 1);
 
         assert!(page_wheel(true, 0, 0, 1000, 20).is_none());
+    }
+
+    #[test]
+    fn stop_moves_past_the_tap_threshold() {
+        assert_eq!(stop_x(500, 0, 1000), 548);
+        assert_eq!(stop_x(980, 0, 1000), 932);
     }
 
     #[test]
