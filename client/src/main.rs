@@ -286,7 +286,7 @@ fn main() -> Result<(), Error> {
     let mut partial_update = value_t!(matches.value_of("pu"), i8).unwrap_or(4);
     let mut refresh = value_t!(matches.value_of("fr"), u32).unwrap_or(500);
     let mut fps = value_t!(matches.value_of("fps"), f32).unwrap_or(30.0);
-    let mut scroll_fps = value_t!(matches.value_of("scroll_fps"), f32).unwrap_or(8.0);
+    let mut scroll_fps = value_t!(matches.value_of("scroll_fps"), f32).unwrap_or(0.0);
     let invert_red_shift = matches.is_present("irs");
 
     let blue_noise = matches.is_present("bn");
@@ -768,9 +768,11 @@ fn main() -> Result<(), Error> {
     // A VNC scroll often arrives as several frames with gaps of 100ms or more.
     // Quiet must outlast those gaps, or the panel refreshes mid-scroll and the
     // rest of the frames paint as a slide. The cap is the longest a button
-    // press will hold the panel if the remote never goes idle.
-    const PAGE_SCROLL_QUIET: Duration = Duration::from_millis(400);
-    const PAGE_SCROLL_CAP: Duration = Duration::from_millis(1200);
+    // press will hold the panel if the remote never goes idle. Stop wait is
+    // how long the wheel notch runs before the drag that cuts it off.
+    let mut wheel_stop_ms: u64 = 300;
+    let mut scroll_quiet_ms: u64 = 400;
+    let mut scroll_cap_ms: u64 = 1200;
 
     'running: loop {
         let time_at_sol = Instant::now();
@@ -796,7 +798,7 @@ fn main() -> Result<(), Error> {
                                                             &host.as_deref(), &port, &username, &password,
                                                             encoding, scale,
                                                             &mut context, panning, disable_touch, long_tap,
-                                                            scroll_fps));
+                                                            scroll_fps, wheel_stop_ms, scroll_quiet_ms, scroll_cap_ms));
             process_render_queue(view.as_ref(), &mut rq, &mut context, &mut updating);
 
             while let Ok(evt) = rx.recv() {
@@ -851,6 +853,21 @@ fn main() -> Result<(), Error> {
                             }
                         }
                     },
+                    Event::Submit(ViewId::GuiInputField5, ref text) => {
+                        if let Ok(value) = text.trim().parse::<u64>() {
+                            wheel_stop_ms = value;
+                        }
+                    },
+                    Event::Submit(ViewId::GuiInputField6, ref text) => {
+                        if let Ok(value) = text.trim().parse::<u64>() {
+                            scroll_quiet_ms = value;
+                        }
+                    },
+                    Event::Submit(ViewId::GuiInputField7, ref text) => {
+                        if let Ok(value) = text.trim().parse::<u64>() {
+                            scroll_cap_ms = value;
+                        }
+                    },
                     Event::Select(EntryId::Portrait) => {
                         let n = CURRENT_DEVICE.startup_rotation();
                         if let Ok(dims) = context.fb.set_rotation(n) {
@@ -864,7 +881,7 @@ fn main() -> Result<(), Error> {
                         view = Box::new(Gui::new(context.fb.rect(), &tx, &mut rq,
                                                  &host.as_deref(), &port, &username, &password,
                                                  encoding, scale, &mut context, panning, disable_touch, long_tap,
-                                                 scroll_fps));
+                                                 scroll_fps, wheel_stop_ms, scroll_quiet_ms, scroll_cap_ms));
                     },
                     Event::Select(EntryId::IPortrait) => {
                         let n = CURRENT_DEVICE.startup_rotation() - 2;
@@ -879,7 +896,7 @@ fn main() -> Result<(), Error> {
                         view = Box::new(Gui::new(context.fb.rect(), &tx, &mut rq,
                                                  &host.as_deref(), &port, &username, &password,
                                                  encoding, scale,  &mut context, panning, disable_touch, long_tap,
-                                                 scroll_fps));
+                                                 scroll_fps, wheel_stop_ms, scroll_quiet_ms, scroll_cap_ms));
                     },
                     Event::Select(EntryId::Landscape) => {
                         let n = CURRENT_DEVICE.startup_rotation() - 1;
@@ -894,7 +911,7 @@ fn main() -> Result<(), Error> {
                         view = Box::new(Gui::new(context.fb.rect(), &tx, &mut rq,
                                                  &host.as_deref(), &port, &username, &password,
                                                  encoding, scale, &mut context, panning, disable_touch, long_tap,
-                                                 scroll_fps));
+                                                 scroll_fps, wheel_stop_ms, scroll_quiet_ms, scroll_cap_ms));
                     },
                     Event::Select(EntryId::ILandscape) => {
                         let n = CURRENT_DEVICE.startup_rotation() - 3;
@@ -909,7 +926,7 @@ fn main() -> Result<(), Error> {
                         view = Box::new(Gui::new(context.fb.rect(), &tx, &mut rq,
                                                  &host.as_deref(), &port, &username, &password,
                                                  encoding, scale, &mut context, panning, disable_touch, long_tap,
-                                                 scroll_fps));
+                                                 scroll_fps, wheel_stop_ms, scroll_quiet_ms, scroll_cap_ms));
                     },
                     Event::Toggle(ViewId::Encoding) => {
                         // println!("{}", encoding);
@@ -1109,7 +1126,8 @@ fn main() -> Result<(), Error> {
                                                                        fb.width(), fb.height(), x_padding, y_padding, x_offset, y_offset,
                                                                        &mut vnc, finger_down_count, finger_seconds, &mut fb,
                                                                        panning, has_drawn_once, scale, long_tap, gui_enabled, disable_touch,
-                                                                       disable_exit_via_hold, exit_duration, &mut finger_down, &mut dragging);
+                                                                       disable_exit_via_hold, exit_duration, &mut finger_down, &mut dragging,
+                                                                       wheel_stop_ms);
         has_drawn_once = event_params.has_drawn_once;
         finger_down_count =  event_params.finger_down_count;
         if event_params.page_scroll_until.is_some() {
@@ -1117,7 +1135,7 @@ fn main() -> Result<(), Error> {
             // remote stops sending frames, then refresh once.
             page_scroll_open = true;
             page_scroll_saw_frame = false;
-            page_scroll_cap = Instant::now() + PAGE_SCROLL_CAP;
+            page_scroll_cap = Instant::now() + Duration::from_millis(scroll_cap_ms);
             page_scroll_until = page_scroll_cap;
         }
         if event_params.exit_to_nickel {
@@ -1949,7 +1967,7 @@ fn main() -> Result<(), Error> {
 
         if page_scroll_open && frame_complete {
             page_scroll_saw_frame = true;
-            let quiet_until = Instant::now() + PAGE_SCROLL_QUIET;
+            let quiet_until = Instant::now() + Duration::from_millis(scroll_quiet_ms);
             page_scroll_until = if quiet_until < page_scroll_cap {
                 quiet_until
             } else {

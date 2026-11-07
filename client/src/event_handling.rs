@@ -28,6 +28,7 @@ impl event_params {
                          panning: bool, mut has_drawn_once: bool, scale: bool, long_tap: bool, gui_enabled:bool, disable_touch:bool,
                          disable_exit_via_hold:bool, exit_duration:u32,
                          finger_down: &mut bool, dragging: &mut bool,
+                         wheel_stop_ms: u64,
                          ) -> event_params {
         // Drain every touch sample waiting in the queue. One sample per
         // framebuffer refresh is what makes a drag crawl frame by frame.
@@ -316,6 +317,7 @@ impl event_params {
                                     fb_height,
                                     x_offset,
                                     y_offset,
+                                    wheel_stop_ms,
                                 );
                                 page_scroll_until = Some(Instant::now());
                                 paged_this_batch = true;
@@ -454,8 +456,6 @@ const POINTER_WHEEL_UP: u8 = 1 << 3;
 const POINTER_WHEEL_DOWN: u8 = 1 << 4;
 /// One Kobo button press is one wheel notch. A notch has no smaller step.
 const PAGE_SCROLL_CLICKS: u32 = 1;
-/// Let the notch animation start. A press before that is an ordinary click.
-const STOP_GAP_MS: u64 = 300;
 const STOP_MOVE_MS: u64 = 16;
 /// Hold still after the nudge so the stop itself does not fling.
 const STOP_HOLD_MS: u64 = 40;
@@ -533,6 +533,7 @@ fn send_page_scroll(
     fb_height: u32,
     x_offset: u32,
     y_offset: u32,
+    stop_gap_ms: u64,
 ) {
     let (left, top, vis_w, vis_h) =
         visible_remote(scale, width, height, fb_width, fb_height, x_offset, y_offset);
@@ -550,7 +551,7 @@ fn send_page_scroll(
             return;
         }
     }
-    thread::sleep(Duration::from_millis(STOP_GAP_MS));
+    thread::sleep(Duration::from_millis(stop_gap_ms));
     let end_x = stop_x(wheel.x, left, vis_w);
     if client.send_pointer_event(1, wheel.x, wheel.y).is_err() {
         error!("server disconnected");
