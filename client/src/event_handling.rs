@@ -451,7 +451,8 @@ impl event_params {
 /// RFB pointer bits 3 and 4 are wheel up and wheel down.
 const POINTER_WHEEL_UP: u8 = 1 << 3;
 const POINTER_WHEEL_DOWN: u8 = 1 << 4;
-/// Four fifths of the visible page, so one press lands about where Page Down would.
+/// Four fifths of the visible page, then two thirds of that. One notch moves
+/// the phone farther than 160px, so the full four fifths scrolled past a page.
 const PAGE_SCROLL_NUM: u32 = 4;
 const PAGE_SCROLL_DEN: u32 = 5;
 /// Android turns one wheel notch into about 64dp. A phone near 2.5x is ~160px.
@@ -488,7 +489,9 @@ fn visible_remote(
 
 fn page_wheel_notches(vis_h: u16) -> u32 {
     let travel = (vis_h as u32) * PAGE_SCROLL_NUM / PAGE_SCROLL_DEN;
-    (travel / WHEEL_PX_PER_NOTCH).max(1)
+    let notches = travel / WHEEL_PX_PER_NOTCH;
+    // Two thirds of the previous distance, rounded to the nearest notch.
+    ((notches * 2 + 1) / 3).max(1)
 }
 
 /// `scroll_up` is wheel up (RFB button 4). The click is aimed at the middle of the page.
@@ -544,12 +547,12 @@ mod tests {
         let up = page_wheel(true, 0, 0, 1000, 2000).unwrap();
         assert_eq!(up.x, 500);
         assert_eq!(up.y, 1000);
-        assert_eq!(up.notches, 10);
+        assert_eq!(up.notches, 7);
         assert_eq!(up.button, POINTER_WHEEL_UP);
 
         let down = page_wheel(false, 0, 0, 1000, 2000).unwrap();
         assert_eq!(down.button, POINTER_WHEEL_DOWN);
-        assert_eq!(down.notches, 10);
+        assert_eq!(down.notches, 7);
 
         let short = page_wheel(true, 10, 40, 200, 100).unwrap();
         assert_eq!(short.x, 110);
