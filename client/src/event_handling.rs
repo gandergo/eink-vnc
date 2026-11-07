@@ -302,7 +302,7 @@ impl event_params {
                             if code == ButtonCode::Backward || code == ButtonCode::Forward =>
                         {
                             // Upper button scrolls up, lower button scrolls down.
-                            // One finger stroke, about five former wheel clicks.
+                            // One finger stroke, a quarter of the visible page.
                             if !paged_this_batch
                                 && status != ButtonStatus::Released
                                 && !*finger_down
@@ -450,13 +450,9 @@ impl event_params {
     }
 }
 
-/// One press moves about five of the old wheel clicks (5 × 160px), in one stroke.
-const PAGE_SCROLL_CLICKS: u32 = 5;
-const WHEEL_PX_PER_NOTCH: u32 = 160;
+/// One press drags one quarter of the visible page, then lifts.
+const PAGE_SCROLL_DEN: u32 = 4;
 const STROKE_GAP_MS: u64 = 16;
-/// Hold still before the lift. A moving lift becomes a fling and the page
-/// keeps scrolling after the finger is gone.
-const STROKE_STOP_MS: u64 = 50;
 
 struct PageStroke {
     x: u16,
@@ -491,12 +487,10 @@ fn page_stroke(scroll_up: bool, left: u16, top: u16, vis_w: u16, vis_h: u16) -> 
     if vis_w < 8 || vis_h < 40 {
         return None;
     }
-    let margin = 24u32.max(vis_h as u32 / 10);
-    let max_travel = (vis_h as u32).saturating_sub(margin.saturating_mul(2));
-    if max_travel < 8 {
+    let travel = vis_h as u32 / PAGE_SCROLL_DEN;
+    if travel < 8 {
         return None;
     }
-    let travel = (PAGE_SCROLL_CLICKS * WHEEL_PX_PER_NOTCH).min(max_travel);
     let x = left as u32 + vis_w as u32 / 2;
     let y_top = top as u32 + (vis_h as u32 - travel) / 2;
     let y_bot = y_top + travel;
@@ -512,10 +506,7 @@ fn page_stroke(scroll_up: bool, left: u16, top: u16, vis_w: u16, vis_h: u16) -> 
     })
 }
 
-/// One gesture: finger down, one move of the page distance, then a stop.
-/// The finger stays still before it lifts so the remote does not fling onward.
-/// A VNC wheel event has no distance field, so a single click cannot stand in
-/// for several notches.
+/// One gesture: finger down, one move across a quarter of the page, finger up.
 fn send_page_scroll(
     vnc: &mut Option<Client>,
     scroll_up: bool,
@@ -547,13 +538,7 @@ fn send_page_scroll(
         error!("server disconnected");
         return;
     }
-    // Two stationary samples, about 100ms, then lift. That is the stop.
-    thread::sleep(Duration::from_millis(STROKE_STOP_MS));
-    if !pointer(1, stroke.end_y) {
-        error!("server disconnected");
-        return;
-    }
-    thread::sleep(Duration::from_millis(STROKE_STOP_MS));
+    thread::sleep(Duration::from_millis(STROKE_GAP_MS));
     if !pointer(0, stroke.end_y) {
         error!("server disconnected");
     }
@@ -564,15 +549,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn page_stroke_matches_about_five_wheel_clicks() {
+    fn page_stroke_is_one_quarter_of_the_page() {
         let up = page_stroke(true, 0, 0, 1000, 2000).unwrap();
         assert_eq!(up.x, 500);
         assert!(up.start_y < up.end_y);
-        assert_eq!(up.end_y - up.start_y, 800);
+        assert_eq!(up.end_y - up.start_y, 500);
 
         let down = page_stroke(false, 0, 0, 1000, 2000).unwrap();
         assert!(down.start_y > down.end_y);
-        assert_eq!(down.start_y - down.end_y, 800);
+        assert_eq!(down.start_y - down.end_y, 500);
 
         assert!(page_stroke(true, 0, 0, 1000, 20).is_none());
     }
