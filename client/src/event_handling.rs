@@ -454,6 +454,9 @@ impl event_params {
 const PAGE_SCROLL_CLICKS: u32 = 5;
 const WHEEL_PX_PER_NOTCH: u32 = 160;
 const STROKE_GAP_MS: u64 = 16;
+/// Hold still before the lift. A moving lift becomes a fling and the page
+/// keeps scrolling after the finger is gone.
+const STROKE_STOP_MS: u64 = 50;
 
 struct PageStroke {
     x: u16,
@@ -509,7 +512,8 @@ fn page_stroke(scroll_up: bool, left: u16, top: u16, vis_w: u16, vis_h: u16) -> 
     })
 }
 
-/// One gesture: finger down, one move across the page distance, finger up.
+/// One gesture: finger down, one move of the page distance, then a stop.
+/// The finger stays still before it lifts so the remote does not fling onward.
 /// A VNC wheel event has no distance field, so a single click cannot stand in
 /// for several notches.
 fn send_page_scroll(
@@ -543,7 +547,13 @@ fn send_page_scroll(
         error!("server disconnected");
         return;
     }
-    thread::sleep(Duration::from_millis(STROKE_GAP_MS));
+    // Two stationary samples, about 100ms, then lift. That is the stop.
+    thread::sleep(Duration::from_millis(STROKE_STOP_MS));
+    if !pointer(1, stroke.end_y) {
+        error!("server disconnected");
+        return;
+    }
+    thread::sleep(Duration::from_millis(STROKE_STOP_MS));
     if !pointer(0, stroke.end_y) {
         error!("server disconnected");
     }
