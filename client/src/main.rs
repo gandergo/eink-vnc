@@ -762,7 +762,14 @@ fn main() -> Result<(), Error> {
     let mut dragging = false;
     let mut last_scroll_paint = Instant::now();
     let mut page_scroll_until = Instant::now();
+    let mut page_scroll_cap = Instant::now();
     let mut page_scroll_open = false;
+    let mut page_scroll_saw_frame = false;
+    // After the last framebuffer update of a button scroll, wait this long
+    // before the single panel refresh. The cap stops a stuck animation from
+    // holding the screen.
+    const PAGE_SCROLL_QUIET: Duration = Duration::from_millis(70);
+    const PAGE_SCROLL_CAP: Duration = Duration::from_millis(320);
 
     'running: loop {
         let time_at_sol = Instant::now();
@@ -1104,9 +1111,13 @@ fn main() -> Result<(), Error> {
                                                                        disable_exit_via_hold, exit_duration, &mut finger_down, &mut dragging);
         has_drawn_once = event_params.has_drawn_once;
         finger_down_count =  event_params.finger_down_count;
-        if let Some(until) = event_params.page_scroll_until {
-            page_scroll_until = until;
+        if event_params.page_scroll_until.is_some() {
+            // The notches are already on the wire. Hold the panel until the
+            // remote stops sending frames, then refresh once.
             page_scroll_open = true;
+            page_scroll_saw_frame = false;
+            page_scroll_cap = Instant::now() + PAGE_SCROLL_CAP;
+            page_scroll_until = page_scroll_cap;
         }
         if event_params.exit_to_nickel {
             fb.set_rotation(CURRENT_DEVICE.startup_rotation()).ok();
@@ -1935,10 +1946,26 @@ fn main() -> Result<(), Error> {
         }
         //only at end of frame request a new update
 
-        let page_scrolling = page_scroll_open && Instant::now() < page_scroll_until;
+        if page_scroll_open && frame_complete {
+            page_scroll_saw_frame = true;
+            let quiet_until = Instant::now() + PAGE_SCROLL_QUIET;
+            page_scroll_until = if quiet_until < page_scroll_cap {
+                quiet_until
+            } else {
+                page_scroll_cap
+            };
+        }
+        let waiting_for_frames = page_scroll_open
+            && !page_scroll_saw_frame
+            && Instant::now() < page_scroll_cap;
+        let waiting_for_quiet = page_scroll_open
+            && page_scroll_saw_frame
+            && Instant::now() < page_scroll_until;
+        let page_scrolling = waiting_for_frames || waiting_for_quiet;
         let page_just_ended = page_scroll_open && !page_scrolling;
         if page_just_ended {
             page_scroll_open = false;
+            page_scroll_saw_frame = false;
         }
         let scrolling = dragging && !event_params.drag_ended;
         let since_paint = time_at_last_draw.elapsed().as_millis() as u64;
@@ -1947,8 +1974,8 @@ fn main() -> Result<(), Error> {
         // A drag used to wait out a full panel refresh before the next pointer
         // sample. Keep writing pixels, and submit an e-ink update only on the
         // scroll cadence. The frame when the finger lifts uses the normal waveform.
-        // A page-button wheel burst is the same idea taken further: hold the panel
-        // until the remote has moved, then refresh once.
+        // A page-button wheel burst should land as one refresh. Keep the panel
+        // still while the remote is still moving, then paint the settled page.
         if page_scrolling {
             thread::sleep(Duration::from_millis(2));
         } else if page_just_ended {

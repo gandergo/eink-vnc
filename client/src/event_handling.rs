@@ -1,5 +1,4 @@
 use std::sync::mpsc::{self, Sender, Receiver};
-use std::thread;
 use std::time::{Duration, Instant};
 use crate::device::CURRENT_DEVICE;
 use crate::framebuffer::Framebuffer;
@@ -317,7 +316,7 @@ impl event_params {
                                     x_offset,
                                     y_offset,
                                 );
-                                page_scroll_until = Some(Instant::now() + PAGE_SCROLL_SETTLE);
+                                page_scroll_until = Some(Instant::now());
                                 paged_this_batch = true;
                             }
                         }
@@ -457,9 +456,6 @@ const PAGE_SCROLL_NUM: u32 = 4;
 const PAGE_SCROLL_DEN: u32 = 5;
 /// Android turns one wheel notch into about 64dp. A phone near 2.5x is ~160px.
 const WHEEL_PX_PER_NOTCH: u32 = 160;
-const WHEEL_GAP_MS: u64 = 8;
-/// After the notches are sent, intermediate remote frames stay off the panel.
-const PAGE_SCROLL_SETTLE: Duration = Duration::from_millis(280);
 
 struct PageWheel {
     x: u16,
@@ -508,7 +504,8 @@ fn page_wheel(scroll_up: bool, left: u16, top: u16, vis_w: u16, vis_h: u16) -> O
     })
 }
 
-/// Click the wheel enough times to move about one page, then release each click.
+/// Send every notch back to back. A gap between clicks is what makes the
+/// remote animate a slow slide instead of one page.
 fn send_page_scroll(
     vnc: &mut Option<Client>,
     scroll_up: bool,
@@ -528,10 +525,7 @@ fn send_page_scroll(
     let Some(client) = vnc.as_mut() else {
         return;
     };
-    for i in 0..wheel.notches {
-        if i > 0 {
-            thread::sleep(Duration::from_millis(WHEEL_GAP_MS));
-        }
+    for _ in 0..wheel.notches {
         if client.send_pointer_event(wheel.button, wheel.x, wheel.y).is_err()
             || client.send_pointer_event(0, wheel.x, wheel.y).is_err()
         {
