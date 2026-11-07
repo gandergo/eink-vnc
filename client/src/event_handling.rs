@@ -1,4 +1,5 @@
 use std::sync::mpsc::{self, Sender, Receiver};
+use std::thread;
 use std::time::{Duration, Instant};
 use crate::device::CURRENT_DEVICE;
 use crate::framebuffer::Framebuffer;
@@ -300,7 +301,8 @@ impl event_params {
                         DeviceEvent::Button { code, status, .. }
                             if code == ButtonCode::Backward || code == ButtonCode::Forward =>
                         {
-                            // Upper button wheels up, lower button wheels down.
+                            // Upper button scrolls up, lower button scrolls down.
+                            // One finger stroke, one eighth of the visible page.
                             if !paged_this_batch
                                 && status != ButtonStatus::Released
                                 && !*finger_down
@@ -448,21 +450,14 @@ impl event_params {
     }
 }
 
-/// RFB pointer bits 3 and 4 are wheel up and wheel down.
-const POINTER_WHEEL_UP: u8 = 1 << 3;
-const POINTER_WHEEL_DOWN: u8 = 1 << 4;
-/// Four fifths of the visible page, then two thirds, then three quarters,
-/// then one quarter of that. One notch moves the phone farther than 160px.
-const PAGE_SCROLL_NUM: u32 = 4;
-const PAGE_SCROLL_DEN: u32 = 5;
-/// Android turns one wheel notch into about 64dp. A phone near 2.5x is ~160px.
-const WHEEL_PX_PER_NOTCH: u32 = 160;
+/// One press drags one eighth of the visible page, then lifts.
+const PAGE_SCROLL_DEN: u32 = 8;
+const STROKE_GAP_MS: u64 = 16;
 
-struct PageWheel {
+struct PageStroke {
     x: u16,
-    y: u16,
-    notches: u32,
-    button: u8,
+    start_y: u16,
+    end_y: u16,
 }
 
 fn visible_remote(
@@ -487,30 +482,31 @@ fn visible_remote(
     (left, top, vis_w, vis_h)
 }
 
-fn page_wheel_notches(vis_h: u16) -> u32 {
-    let travel = (vis_h as u32) * PAGE_SCROLL_NUM / PAGE_SCROLL_DEN;
-    let notches = travel / WHEEL_PX_PER_NOTCH;
-    // Two thirds, then three quarters, then one quarter of that count.
-    let shortened = (notches * 2 + 1) / 3;
-    let three_quarters = (shortened * 3 + 2) / 4;
-    ((three_quarters + 2) / 4).max(1)
-}
-
-/// `scroll_up` is wheel up (RFB button 4). The click is aimed at the middle of the page.
-fn page_wheel(scroll_up: bool, left: u16, top: u16, vis_w: u16, vis_h: u16) -> Option<PageWheel> {
+/// `scroll_up` drags the finger down, which pulls earlier content into view.
+fn page_stroke(scroll_up: bool, left: u16, top: u16, vis_w: u16, vis_h: u16) -> Option<PageStroke> {
     if vis_w < 8 || vis_h < 40 {
         return None;
     }
-    Some(PageWheel {
-        x: (left as u32 + vis_w as u32 / 2) as u16,
-        y: (top as u32 + vis_h as u32 / 2) as u16,
-        notches: page_wheel_notches(vis_h),
-        button: if scroll_up { POINTER_WHEEL_UP } else { POINTER_WHEEL_DOWN },
+    let travel = vis_h as u32 / PAGE_SCROLL_DEN;
+    if travel < 8 {
+        return None;
+    }
+    let x = left as u32 + vis_w as u32 / 2;
+    let y_top = top as u32 + (vis_h as u32 - travel) / 2;
+    let y_bot = y_top + travel;
+    let (start_y, end_y) = if scroll_up {
+        (y_top, y_bot)
+    } else {
+        (y_bot, y_top)
+    };
+    Some(PageStroke {
+        x: x as u16,
+        start_y: start_y as u16,
+        end_y: end_y as u16,
     })
 }
 
-/// Send every notch back to back. A gap between clicks is what makes the
-/// remote animate a slow slide instead of one page.
+/// One gesture: finger down, one move across an eighth of the page, finger up.
 fn send_page_scroll(
     vnc: &mut Option<Client>,
     scroll_up: bool,
@@ -524,19 +520,27 @@ fn send_page_scroll(
 ) {
     let (left, top, vis_w, vis_h) =
         visible_remote(scale, width, height, fb_width, fb_height, x_offset, y_offset);
-    let Some(wheel) = page_wheel(scroll_up, left, top, vis_w, vis_h) else {
+    let Some(stroke) = page_stroke(scroll_up, left, top, vis_w, vis_h) else {
         return;
     };
     let Some(client) = vnc.as_mut() else {
         return;
     };
-    for _ in 0..wheel.notches {
-        if client.send_pointer_event(wheel.button, wheel.x, wheel.y).is_err()
-            || client.send_pointer_event(0, wheel.x, wheel.y).is_err()
-        {
-            error!("server disconnected");
-            return;
-        }
+    let mut pointer = |mask: u8, y: u16| -> bool {
+        client.send_pointer_event(mask, stroke.x, y).is_ok()
+    };
+    if !pointer(1, stroke.start_y) {
+        error!("server disconnected");
+        return;
+    }
+    thread::sleep(Duration::from_millis(STROKE_GAP_MS));
+    if !pointer(1, stroke.end_y) {
+        error!("server disconnected");
+        return;
+    }
+    thread::sleep(Duration::from_millis(STROKE_GAP_MS));
+    if !pointer(0, stroke.end_y) {
+        error!("server disconnected");
     }
 }
 
@@ -545,32 +549,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn page_wheel_is_one_quarter_of_the_previous_burst() {
-        // 2000px was 5 clicks. One quarter of that, rounded, is 1.
-        let up = page_wheel(true, 0, 0, 1000, 2000).unwrap();
+    fn page_stroke_is_one_eighth_of_the_page() {
+        let up = page_stroke(true, 0, 0, 1000, 2000).unwrap();
         assert_eq!(up.x, 500);
-        assert_eq!(up.y, 1000);
-        assert_eq!(up.notches, 1);
-        assert_eq!(up.button, POINTER_WHEEL_UP);
+        assert!(up.start_y < up.end_y);
+        assert_eq!(up.end_y - up.start_y, 250);
 
-        let down = page_wheel(false, 0, 0, 1000, 2000).unwrap();
-        assert_eq!(down.button, POINTER_WHEEL_DOWN);
-        assert_eq!(down.notches, 1);
+        let down = page_stroke(false, 0, 0, 1000, 2000).unwrap();
+        assert!(down.start_y > down.end_y);
+        assert_eq!(down.start_y - down.end_y, 250);
 
-        // 1400px was 4 clicks. One quarter of that is 1.
-        let mid = page_wheel(true, 0, 0, 800, 1400).unwrap();
-        assert_eq!(mid.notches, 1);
-
-        // 3000px was 8 clicks. One quarter of that is 2.
-        let tall = page_wheel(true, 0, 0, 1000, 3000).unwrap();
-        assert_eq!(tall.notches, 2);
-
-        let short = page_wheel(true, 10, 40, 200, 100).unwrap();
-        assert_eq!(short.x, 110);
-        assert_eq!(short.y, 90);
-        assert_eq!(short.notches, 1);
-
-        assert!(page_wheel(true, 0, 0, 1000, 20).is_none());
+        assert!(page_stroke(true, 0, 0, 1000, 20).is_none());
     }
 
     #[test]
