@@ -1,5 +1,4 @@
 use std::sync::mpsc::{self, Sender, Receiver};
-use std::thread;
 use std::time::{Duration, Instant};
 use crate::device::CURRENT_DEVICE;
 use crate::framebuffer::Framebuffer;
@@ -301,8 +300,7 @@ impl event_params {
                         DeviceEvent::Button { code, status, .. }
                             if code == ButtonCode::Backward || code == ButtonCode::Forward =>
                         {
-                            // Upper button scrolls up, lower button scrolls down.
-                            // One eighth-page stroke, held still before the lift.
+                            // Upper button wheels up, lower button wheels down, one click.
                             if !paged_this_batch
                                 && status != ButtonStatus::Released
                                 && !*finger_down
@@ -450,16 +448,17 @@ impl event_params {
     }
 }
 
-/// One press drags one eighth of the visible page, then lifts.
-const PAGE_SCROLL_DEN: u32 = 8;
-const STROKE_GAP_MS: u64 = 16;
-/// Two stationary samples at the end. A moving lift becomes a fling.
-const STROKE_STOP_MS: u64 = 40;
+/// RFB pointer bits 3 and 4 are wheel up and wheel down.
+const POINTER_WHEEL_UP: u8 = 1 << 3;
+const POINTER_WHEEL_DOWN: u8 = 1 << 4;
+/// One Kobo button press is one wheel notch. A notch has no smaller step.
+const PAGE_SCROLL_CLICKS: u32 = 1;
 
-struct PageStroke {
+struct PageWheel {
     x: u16,
-    start_y: u16,
-    end_y: u16,
+    y: u16,
+    notches: u32,
+    button: u8,
 }
 
 fn visible_remote(
@@ -484,31 +483,20 @@ fn visible_remote(
     (left, top, vis_w, vis_h)
 }
 
-/// `scroll_up` drags the finger down, which pulls earlier content into view.
-fn page_stroke(scroll_up: bool, left: u16, top: u16, vis_w: u16, vis_h: u16) -> Option<PageStroke> {
+/// `scroll_up` is wheel up (RFB button 4). The click is aimed at the middle of the page.
+fn page_wheel(scroll_up: bool, left: u16, top: u16, vis_w: u16, vis_h: u16) -> Option<PageWheel> {
     if vis_w < 8 || vis_h < 40 {
         return None;
     }
-    let travel = vis_h as u32 / PAGE_SCROLL_DEN;
-    if travel < 8 {
-        return None;
-    }
-    let x = left as u32 + vis_w as u32 / 2;
-    let y_top = top as u32 + (vis_h as u32 - travel) / 2;
-    let y_bot = y_top + travel;
-    let (start_y, end_y) = if scroll_up {
-        (y_top, y_bot)
-    } else {
-        (y_bot, y_top)
-    };
-    Some(PageStroke {
-        x: x as u16,
-        start_y: start_y as u16,
-        end_y: end_y as u16,
+    Some(PageWheel {
+        x: (left as u32 + vis_w as u32 / 2) as u16,
+        y: (top as u32 + vis_h as u32 / 2) as u16,
+        notches: PAGE_SCROLL_CLICKS,
+        button: if scroll_up { POINTER_WHEEL_UP } else { POINTER_WHEEL_DOWN },
     })
 }
 
-/// Finger down, one move across an eighth of the page, a short stop, then finger up.
+/// One notch, pressed and released at the middle of the page.
 fn send_page_scroll(
     vnc: &mut Option<Client>,
     scroll_up: bool,
@@ -522,32 +510,19 @@ fn send_page_scroll(
 ) {
     let (left, top, vis_w, vis_h) =
         visible_remote(scale, width, height, fb_width, fb_height, x_offset, y_offset);
-    let Some(stroke) = page_stroke(scroll_up, left, top, vis_w, vis_h) else {
+    let Some(wheel) = page_wheel(scroll_up, left, top, vis_w, vis_h) else {
         return;
     };
     let Some(client) = vnc.as_mut() else {
         return;
     };
-    let mut pointer = |mask: u8, y: u16| -> bool {
-        client.send_pointer_event(mask, stroke.x, y).is_ok()
-    };
-    if !pointer(1, stroke.start_y) {
-        error!("server disconnected");
-        return;
-    }
-    thread::sleep(Duration::from_millis(STROKE_GAP_MS));
-    if !pointer(1, stroke.end_y) {
-        error!("server disconnected");
-        return;
-    }
-    thread::sleep(Duration::from_millis(STROKE_STOP_MS));
-    if !pointer(1, stroke.end_y) {
-        error!("server disconnected");
-        return;
-    }
-    thread::sleep(Duration::from_millis(STROKE_STOP_MS));
-    if !pointer(0, stroke.end_y) {
-        error!("server disconnected");
+    for _ in 0..wheel.notches {
+        if client.send_pointer_event(wheel.button, wheel.x, wheel.y).is_err()
+            || client.send_pointer_event(0, wheel.x, wheel.y).is_err()
+        {
+            error!("server disconnected");
+            return;
+        }
     }
 }
 
@@ -556,17 +531,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn page_stroke_is_one_eighth_of_the_page() {
-        let up = page_stroke(true, 0, 0, 1000, 2000).unwrap();
+    fn page_wheel_is_one_click() {
+        let up = page_wheel(true, 0, 0, 1000, 2000).unwrap();
         assert_eq!(up.x, 500);
-        assert!(up.start_y < up.end_y);
-        assert_eq!(up.end_y - up.start_y, 250);
+        assert_eq!(up.y, 1000);
+        assert_eq!(up.notches, 1);
+        assert_eq!(up.button, POINTER_WHEEL_UP);
 
-        let down = page_stroke(false, 0, 0, 1000, 2000).unwrap();
-        assert!(down.start_y > down.end_y);
-        assert_eq!(down.start_y - down.end_y, 250);
+        let down = page_wheel(false, 0, 0, 1000, 2000).unwrap();
+        assert_eq!(down.button, POINTER_WHEEL_DOWN);
+        assert_eq!(down.notches, 1);
 
-        assert!(page_stroke(true, 0, 0, 1000, 20).is_none());
+        assert!(page_wheel(true, 0, 0, 1000, 20).is_none());
     }
 
     #[test]
