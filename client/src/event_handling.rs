@@ -1,4 +1,5 @@
 use std::sync::mpsc::{self, Sender, Receiver};
+use std::thread;
 use std::time::{Duration, Instant};
 use crate::device::CURRENT_DEVICE;
 use crate::framebuffer::Framebuffer;
@@ -300,7 +301,7 @@ impl event_params {
                         DeviceEvent::Button { code, status, .. }
                             if code == ButtonCode::Backward || code == ButtonCode::Forward =>
                         {
-                            // Upper button wheels up, lower button wheels down, one click.
+                            // Upper button wheels up, lower button wheels down, then a tap stops the animation.
                             if !paged_this_batch
                                 && status != ButtonStatus::Released
                                 && !*finger_down
@@ -453,6 +454,9 @@ const POINTER_WHEEL_UP: u8 = 1 << 3;
 const POINTER_WHEEL_DOWN: u8 = 1 << 4;
 /// One Kobo button press is one wheel notch. A notch has no smaller step.
 const PAGE_SCROLL_CLICKS: u32 = 1;
+/// Wait for Android to start the notch animation, then tap to abort it.
+const STOP_GAP_MS: u64 = 40;
+const STOP_TAP_MS: u64 = 30;
 
 struct PageWheel {
     x: u16,
@@ -496,7 +500,7 @@ fn page_wheel(scroll_up: bool, left: u16, top: u16, vis_w: u16, vis_h: u16) -> O
     })
 }
 
-/// One notch, pressed and released at the middle of the page.
+/// One notch at the middle of the page, then a short tap that stops the animation.
 fn send_page_scroll(
     vnc: &mut Option<Client>,
     scroll_up: bool,
@@ -523,6 +527,15 @@ fn send_page_scroll(
             error!("server disconnected");
             return;
         }
+    }
+    thread::sleep(Duration::from_millis(STOP_GAP_MS));
+    if client.send_pointer_event(1, wheel.x, wheel.y).is_err() {
+        error!("server disconnected");
+        return;
+    }
+    thread::sleep(Duration::from_millis(STOP_TAP_MS));
+    if client.send_pointer_event(0, wheel.x, wheel.y).is_err() {
+        error!("server disconnected");
     }
 }
 
