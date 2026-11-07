@@ -765,11 +765,12 @@ fn main() -> Result<(), Error> {
     let mut page_scroll_cap = Instant::now();
     let mut page_scroll_open = false;
     let mut page_scroll_saw_frame = false;
-    // After the last framebuffer update of a button scroll, wait this long
-    // before the single panel refresh. The cap stops a stuck animation from
-    // holding the screen.
-    const PAGE_SCROLL_QUIET: Duration = Duration::from_millis(70);
-    const PAGE_SCROLL_CAP: Duration = Duration::from_millis(320);
+    // A VNC scroll often arrives as several frames with gaps of 100ms or more.
+    // Quiet must outlast those gaps, or the panel refreshes mid-scroll and the
+    // rest of the frames paint as a slide. The cap is the longest a button
+    // press will hold the panel if the remote never goes idle.
+    const PAGE_SCROLL_QUIET: Duration = Duration::from_millis(400);
+    const PAGE_SCROLL_CAP: Duration = Duration::from_millis(1200);
 
     'running: loop {
         let time_at_sol = Instant::now();
