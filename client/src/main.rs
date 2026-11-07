@@ -1113,7 +1113,7 @@ fn main() -> Result<(), Error> {
         has_drawn_once = event_params.has_drawn_once;
         finger_down_count =  event_params.finger_down_count;
         if event_params.page_scroll_until.is_some() {
-            // The notches are already on the wire. Hold the panel until the
+            // The stroke is already on the wire. Hold the panel until the
             // remote stops sending frames, then refresh once.
             page_scroll_open = true;
             page_scroll_saw_frame = false;
@@ -1975,7 +1975,7 @@ fn main() -> Result<(), Error> {
         // A drag used to wait out a full panel refresh before the next pointer
         // sample. Keep writing pixels, and submit an e-ink update only on the
         // scroll cadence. The frame when the finger lifts uses the normal waveform.
-        // A page-button wheel burst should land as one refresh. Keep the panel
+        // A page-button stroke should land as one refresh. Keep the panel
         // still while the remote is still moving, then paint the settled page.
         if page_scrolling {
             thread::sleep(Duration::from_millis(2));
