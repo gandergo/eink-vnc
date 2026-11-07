@@ -302,7 +302,7 @@ impl event_params {
                             if code == ButtonCode::Backward || code == ButtonCode::Forward =>
                         {
                             // Upper button scrolls up, lower button scrolls down.
-                            // One eighth-page stroke, then a tap that stops the fling.
+                            // One eighth-page stroke, held still before the lift.
                             if !paged_this_batch
                                 && status != ButtonStatus::Released
                                 && !*finger_down
@@ -453,10 +453,8 @@ impl event_params {
 /// One press drags one eighth of the visible page, then lifts.
 const PAGE_SCROLL_DEN: u32 = 8;
 const STROKE_GAP_MS: u64 = 16;
-/// Wait after the lift so the phone starts the fling, then tap to stop it.
-const STOP_GAP_MS: u64 = 48;
-/// How long the stop tap stays down.
-const STOP_TAP_MS: u64 = 40;
+/// Two stationary samples at the end. A moving lift becomes a fling.
+const STROKE_STOP_MS: u64 = 40;
 
 struct PageStroke {
     x: u16,
@@ -510,7 +508,7 @@ fn page_stroke(scroll_up: bool, left: u16, top: u16, vis_w: u16, vis_h: u16) -> 
     })
 }
 
-/// One gesture: a quick eighth-page stroke, then a separate tap that stops the fling.
+/// Finger down, one move across an eighth of the page, a short stop, then finger up.
 fn send_page_scroll(
     vnc: &mut Option<Client>,
     scroll_up: bool,
@@ -542,17 +540,12 @@ fn send_page_scroll(
         error!("server disconnected");
         return;
     }
-    thread::sleep(Duration::from_millis(STROKE_GAP_MS));
-    if !pointer(0, stroke.end_y) {
-        error!("server disconnected");
-        return;
-    }
-    thread::sleep(Duration::from_millis(STOP_GAP_MS));
+    thread::sleep(Duration::from_millis(STROKE_STOP_MS));
     if !pointer(1, stroke.end_y) {
         error!("server disconnected");
         return;
     }
-    thread::sleep(Duration::from_millis(STOP_TAP_MS));
+    thread::sleep(Duration::from_millis(STROKE_STOP_MS));
     if !pointer(0, stroke.end_y) {
         error!("server disconnected");
     }
