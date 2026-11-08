@@ -370,7 +370,7 @@ impl Gui {
                 ViewId::GuiInputField5,
             )
                 .border(true)
-                .placeholder("300")
+                .placeholder("400")
                 .text(&wheel_stop_ms.to_string(), context),
         ) as Box<dyn View>);
 
@@ -395,7 +395,7 @@ impl Gui {
                 ViewId::GuiInputField6,
             )
                 .border(true)
-                .placeholder("400")
+                .placeholder("100")
                 .text(&scroll_quiet_ms.to_string(), context),
         ) as Box<dyn View>);
 
@@ -420,7 +420,7 @@ impl Gui {
                 ViewId::GuiInputField7,
             )
                 .border(true)
-                .placeholder("1200")
+                .placeholder("400")
                 .text(&scroll_cap_ms.to_string(), context),
         ) as Box<dyn View>);
 

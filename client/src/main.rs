@@ -770,9 +770,9 @@ fn main() -> Result<(), Error> {
     // rest of the frames paint as a slide. The cap is the longest a button
     // press will hold the panel if the remote never goes idle. Stop wait is
     // how long the wheel notch runs before the drag that cuts it off.
-    let mut wheel_stop_ms: u64 = 300;
-    let mut scroll_quiet_ms: u64 = 400;
-    let mut scroll_cap_ms: u64 = 1200;
+    let mut wheel_stop_ms: u64 = 400;
+    let mut scroll_quiet_ms: u64 = 100;
+    let mut scroll_cap_ms: u64 = 400;
 
     'running: loop {
         let time_at_sol = Instant::now();
